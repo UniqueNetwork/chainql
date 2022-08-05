@@ -562,30 +562,47 @@ fn make_pallet_key(
                         TypeDef::Tuple(t) if hashers.len() != 1 => t.fields().iter().collect(),
                         _ => [&key].into_iter().collect(),
                     };
-                    ensure!(
-                        hashers.len() == fields.len(),
-                        "bad tuple: {:?} {}-{}",
-                        tuple.type_def(),
-                        storage.prefix,
-                        entry.name,
-                    );
 
-                    let keys = hashers
-                        .into_iter()
-                        .zip(fields.iter().map(|s| **s))
-                        .collect::<Vec<(_, _)>>();
+                    let keys = if hashers.len() == 1 {
+                        vec![(hashers[0].clone(), key)]
+                    } else {
+                        ensure!(
+                            hashers.len() == fields.len(),
+                            "bad tuple: {:?} {:?} {}-{}",
+                            hashers,
+                            tuple.type_def(),
+                            storage.prefix,
+                            entry.name,
+                        );
+
+                        hashers
+                            .into_iter()
+                            .zip(fields.iter().map(|s| **s))
+                            .collect::<Vec<(_, _)>>()
+                    };
 
                     out.member(entry.name.clone().into()).binding(
                         s.clone(),
-                        LazyBinding::Bound(Thunk::evaluated(make_fetch_keys_storage(
-                            s.clone(),
-                            client.clone(),
-                            entry_key,
-                            registry.clone(),
-                            keys,
-                            value,
-                            default,
-                        )?)),
+                        LazyBinding::Bound(simple_thunk! {
+                            let s = state;
+                            let entry_key: Vec<u8> = entry_key;
+                            let client: Client = client.clone();
+                            #[trace(skip)]
+                            let value: UntrackedSymbol<TypeId> = value;
+                            let default: Option<Vec<u8>> = default;
+                            let registry: Rc<PortableRegistry> = registry.clone();
+                            #[trace(skip)]
+                            let keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)> = keys;
+                            Thunk::<Val>::evaluated(make_fetch_keys_storage(
+                                s,
+                                client,
+                                entry_key,
+                                registry,
+                                keys,
+                                value,
+                                default,
+                            )?)
+                        }),
                     )?;
                 }
             }
