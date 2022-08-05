@@ -38,6 +38,8 @@ struct Opts {
     general: GeneralOpts,
     #[clap(flatten)]
     input: InputOpts,
+    #[clap(long, short = 'S')]
+    string: bool,
 }
 
 macro_rules! simple_thunk {
@@ -750,8 +752,17 @@ fn main_jrsonnet(s: State) -> Result<String> {
     };
     let res = s.with_tla(res)?;
 
-    let res = res.manifest(s, &ManifestFormat::Json { padding: 3 })?;
-    Ok(res.as_str().to_owned())
+    Ok(if opts.string {
+        let res = if let Some(str) = res.as_str() {
+            str.as_str().to_owned()
+        } else {
+            bail!("expected string as output")
+        };
+        res
+    } else {
+        let res = res.manifest(s, &ManifestFormat::Json { padding: 3 })?;
+        res.as_str().to_owned()
+    })
 }
 
 fn main_sync() {
