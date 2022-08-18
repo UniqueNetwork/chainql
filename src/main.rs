@@ -937,13 +937,13 @@ fn builtin_encode_key(this: &builtin_encode_key, s: State, keyi: VecVal) -> Resu
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
-fn builtin_encode(this: &builtin_encode, s: State, typ: u32, v: Any) -> Result<Vec<u8>> {
+fn builtin_encode(this: &builtin_encode, s: State, typ: u32, v: Any) -> Result<String> {
     let typ = Compact(typ).encode();
     let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
     let mut out = Vec::new();
     encode_value(s, &this.reg, sym, false, v.0, &mut out)?;
 
-    Ok(out)
+    Ok(to_hex(&out))
 }
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
