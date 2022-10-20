@@ -11,9 +11,10 @@ use jrsonnet_evaluator::{
     function::{builtin, FuncVal},
     gc::TraceBox,
     tb,
+    trace::PathResolver,
     typed::{Any, Typed, VecVal},
     val::{ArrValue, ThunkValue},
-    IStr, LazyBinding, ManifestFormat, ObjValue, ObjValueBuilder, Pending, State, Thunk, Unbound,
+    IStr, ManifestFormat, MaybeUnbound, ObjValue, ObjValueBuilder, Pending, State, Thunk, Unbound,
     Val,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
@@ -772,7 +773,7 @@ fn make_pallet_key(
                     out.member(entry.name.clone().into())
                         .binding(
                             s.clone(),
-                            LazyBinding::Bound(simple_thunk! {
+                            MaybeUnbound::Bound(simple_thunk! {
                                 let s = state;
                                 let entry_key: Vec<u8> = entry_key;
                                 let client: Client = client.clone();
@@ -824,7 +825,7 @@ fn make_pallet_key(
 
                     out.member(entry.name.clone().into()).binding(
                         s.clone(),
-                        LazyBinding::Bound(simple_thunk! {
+                        MaybeUnbound::Bound(simple_thunk! {
                             let s = state;
                             let entry_key: Vec<u8> = entry_key;
                             let client: Client = client.clone();
@@ -963,7 +964,7 @@ fn make_block(s: State, client: Client) -> Result<ObjValue> {
     for pallet in &meta.pallets {
         obj.member(pallet.name.clone().into()).binding(
             s.clone(),
-            LazyBinding::Bound(simple_thunk! {
+            MaybeUnbound::Bound(simple_thunk! {
                 let s = state;
                 let client: Client = client.clone();
                 #[trace(skip)]
@@ -977,7 +978,7 @@ fn make_block(s: State, client: Client) -> Result<ObjValue> {
     obj.member("_meta".into()).hide().value(s.clone(), meta)?;
     obj.member("_raw".into()).hide().binding(
         s.clone(),
-        LazyBinding::Bound(simple_thunk! {
+        MaybeUnbound::Bound(simple_thunk! {
             let s = state;
             let client: Client = client;
             Thunk::<Val>::evaluated(Val::Obj(make_raw_key(s, client)?))
@@ -1014,7 +1015,7 @@ fn builtin_chain(s: State, url: String) -> Result<ObjValue> {
         })))),
     )?;
     obj.member("latest".into())
-        .binding(s, LazyBinding::Bound(simple_thunk!{
+        .binding(s, MaybeUnbound::Bound(simple_thunk!{
             let s = state;
             let client: ClientShared = client;
             Thunk::<Val>::evaluated(Val::Obj(make_block(s, client.block(None).map_err(client_error)?)?))
@@ -1108,9 +1109,14 @@ fn main_jrsonnet(s: State) -> Result<String> {
         s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)),
     )?;
-    s.settings_mut()
+    let context_initializer =
+        jrsonnet_stdlib::ContextInitializer::new(s.clone(), PathResolver::new_cwd_fallback());
+    context_initializer
+        .settings_mut()
         .globals
-        .insert("cql".into(), Val::Obj(cql.build()));
+        .insert("cql".into(), Thunk::evaluated(Val::Obj(cql.build())));
+
+    s.settings_mut().context_initializer = Box::new(context_initializer);
 
     let res = if opts.input.exec {
         s.evaluate_snippet("<exec>".to_owned(), opts.input.input)?
