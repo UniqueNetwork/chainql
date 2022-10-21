@@ -1109,14 +1109,13 @@ fn main_jrsonnet(s: State) -> Result<String> {
         s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)),
     )?;
-    let context_initializer =
-        jrsonnet_stdlib::ContextInitializer::new(s.clone(), PathResolver::new_cwd_fallback());
-    context_initializer
+    s.context_initializer()
+        .as_any()
+        .downcast_ref::<jrsonnet_stdlib::ContextInitializer>()
+        .expect("std context")
         .settings_mut()
         .globals
         .insert("cql".into(), Thunk::evaluated(Val::Obj(cql.build())));
-
-    s.settings_mut().context_initializer = Box::new(context_initializer);
 
     let res = if opts.input.exec {
         s.evaluate_snippet("<exec>".to_owned(), opts.input.input)?
