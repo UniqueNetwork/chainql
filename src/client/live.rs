@@ -8,6 +8,8 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::runtime::Handle;
 
+use super::ClientT;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("rpc error: {0}")]
@@ -67,13 +69,13 @@ impl ClientShared {
             real: Rc::new(client),
         })
     }
-    pub fn block(&self, num: Option<u32>) -> Result<Client> {
+    pub fn block(&self, num: Option<u32>) -> Result<LiveClient> {
         let handle = Handle::current();
         let block = handle
             .block_on(self.real.get_block_hash(num))?
             .ok_or(Error::BlockNotFound(num))?;
 
-        Ok(Client {
+        Ok(LiveClient {
             real: self.real.clone(),
             key_value_cache: Rc::new(RefCell::new(HashMap::new())),
             block: Rc::new(block),
@@ -82,7 +84,7 @@ impl ClientShared {
 }
 
 #[derive(Clone, Trace)]
-pub struct Client {
+pub struct LiveClient {
     #[trace(skip)]
     real: Rc<WsClient>,
     #[trace(skip)]
@@ -91,7 +93,7 @@ pub struct Client {
     #[trace(skip)]
     block: Rc<String>,
 }
-impl Client {
+impl LiveClient {
     pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         eprintln!("loading keys by prefix {prefix:0>2x?}");
         let prefix_str = format!("0x{}", hex::encode(&prefix));
@@ -208,5 +210,23 @@ impl Client {
         } else {
             Err(Error::UnsupportedMetadataVersion)
         }
+    }
+}
+
+impl ClientT for LiveClient {
+    fn get_keys(&self, prefix: &[u8]) -> super::Result<Vec<Vec<u8>>> {
+        Ok(self.get_keys(prefix)?)
+    }
+
+    fn get_storage(&self, key: &[u8]) -> super::Result<Option<Vec<u8>>> {
+        Ok(self.get_storage(key)?)
+    }
+
+    fn preload_storage(&self, keys: &[&Vec<u8>]) -> super::Result<()> {
+        Ok(self.preload_storage(keys)?)
+    }
+
+    fn get_metadata(&self) -> super::Result<RuntimeMetadataV14> {
+        Ok(self.get_metadata()?)
     }
 }
