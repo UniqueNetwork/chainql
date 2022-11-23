@@ -789,6 +789,7 @@ fn make_pallet_key(
     client: Client,
     data: PalletMetadata<PortableForm>,
     registry: Rc<PortableRegistry>,
+    opts: ChainOpts,
 ) -> Result<ObjValue> {
     let mut out = ObjValueBuilder::new();
     let mut keyout = ObjValueBuilder::new();
@@ -802,6 +803,11 @@ fn make_pallet_key(
             let mut entry_key = vec![];
             entry_key.extend_from_slice(&pallet_key);
             entry_key.extend_from_slice(&key_key);
+            if opts.omit_empty {
+                if !client.contains_data_for(&entry_key).map_err(client_error)? {
+                    continue;
+                }
+            }
             let default = match entry.modifier {
                 StorageEntryModifier::Optional => None,
                 StorageEntryModifier::Default => Some(entry.default),
@@ -1086,11 +1092,23 @@ fn builtin_ss58(v: IStr) -> Result<IStr> {
     Ok(to_hex(s.as_ref()).into())
 }
 
-fn make_block(s: State, client: Client) -> Result<ObjValue> {
+fn make_block(s: State, client: Client, opts: ChainOpts) -> Result<ObjValue> {
     let mut obj = ObjValueBuilder::new();
     let meta = client.get_metadata().map_err(client_error)?;
     let reg = Rc::new(meta.types.clone());
     for pallet in &meta.pallets {
+        if opts.omit_empty {
+            let Some(storage) = &pallet.storage else {
+                continue;
+            };
+            let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
+            if !client
+                .contains_data_for(&pallet_key)
+                .map_err(client_error)?
+            {
+                continue;
+            }
+        }
         obj.member(pallet.name.clone().into()).binding(
             s.clone(),
             MaybeUnbound::Bound(simple_thunk! {
@@ -1099,7 +1117,8 @@ fn make_block(s: State, client: Client) -> Result<ObjValue> {
                 #[trace(skip)]
                 let pallet: PalletMetadata<PortableForm> = pallet.clone();
                 let reg: Rc<PortableRegistry> = reg.clone();
-                Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(s, client, pallet, reg)?))
+                let opts: ChainOpts = opts;
+                Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(s, client, pallet, reg, opts)?))
             }),
         )?;
     }
@@ -1128,6 +1147,7 @@ fn make_block(s: State, client: Client) -> Result<ObjValue> {
 
 #[builtin(fields(
     client: ClientShared,
+    opts: ChainOpts,
 ))]
 fn chain_block(this: &chain_block, s: State, block: u32) -> Result<ObjValue> {
     make_block(
@@ -1138,11 +1158,18 @@ fn chain_block(this: &chain_block, s: State, block: u32) -> Result<ObjValue> {
                 .map_err(client::Error::Live)
                 .map_err(client_error)?,
         ),
+        this.opts,
     )
 }
 
+#[derive(Typed, Trace, Default, Clone, Copy)]
+struct ChainOpts {
+    omit_empty: bool,
+}
+
 #[builtin]
-fn builtin_chain(s: State, url: String) -> Result<ObjValue> {
+fn builtin_chain(s: State, url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+    let opts = opts.unwrap_or_default();
     let client = ClientShared::new(url)
         .map_err(client::Error::Live)
         .map_err(client_error)?;
@@ -1151,19 +1178,22 @@ fn builtin_chain(s: State, url: String) -> Result<ObjValue> {
         s.clone(),
         Val::Func(FuncVal::Builtin(Cc::new(tb!(chain_block {
             client: client.clone(),
+            opts,
         })))),
     )?;
     obj.member("latest".into())
         .binding(s, MaybeUnbound::Bound(simple_thunk!{
             let s = state;
             let client: ClientShared = client;
-            Thunk::<Val>::evaluated(Val::Obj(make_block(s, Client::new(client.block(None).map_err(client::Error::Live).map_err(client_error)?))?))
+            let opts: ChainOpts = opts;
+            Thunk::<Val>::evaluated(Val::Obj(make_block(s, Client::new(client.block(None).map_err(client::Error::Live).map_err(client_error)?), opts)?))
         }))?;
     Ok(obj.build())
 }
 
 #[builtin]
-fn builtin_dump(s: State, meta: Any, dump: ObjValue) -> Result<ObjValue> {
+fn builtin_dump(s: State, meta: Any, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
+    let opts = opts.unwrap_or_default();
     let value = serde_json::Value::from_untyped(meta.0, s.clone())?;
     let meta: RuntimeMetadataV14 = serde_json::from_value(value).unwrap();
     let mut data = BTreeMap::new();
@@ -1176,7 +1206,7 @@ fn builtin_dump(s: State, meta: Any, dump: ObjValue) -> Result<ObjValue> {
         let v = from_hex(&v)?;
         data.insert(k, v);
     }
-    make_block(s, Client::new(ClientDump { meta, data }))
+    make_block(s, Client::new(ClientDump { meta, data }), opts)
 }
 
 fn to_hex(data: &[u8]) -> String {

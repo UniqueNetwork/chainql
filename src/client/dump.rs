@@ -38,6 +38,15 @@ impl ClientT for ClientDump {
         Ok(())
     }
 
+    fn contains_data_for(&self, prefix: &[u8]) -> super::Result<bool> {
+        Ok(self
+            .data
+            .range(prefix.to_vec()..)
+            .next()
+            .map(|(k, _)| k.starts_with(prefix))
+            .unwrap_or(false))
+    }
+
     fn get_metadata(&self) -> super::Result<RuntimeMetadataV14> {
         Ok(self.meta.clone())
     }

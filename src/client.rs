@@ -18,6 +18,7 @@ pub trait ClientT {
     fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
     fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()>;
     fn get_metadata(&self) -> Result<RuntimeMetadataV14>;
+    fn contains_data_for(&self, prefix: &[u8]) -> Result<bool>;
 }
 
 #[derive(Clone, Trace)]
@@ -42,5 +43,9 @@ impl ClientT for Client {
 
     fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
         self.0.get_metadata()
+    }
+
+    fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
+        self.0.contains_data_for(prefix)
     }
 }

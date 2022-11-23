@@ -211,6 +211,19 @@ impl LiveClient {
             Err(Error::UnsupportedMetadataVersion)
         }
     }
+    fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
+        eprintln!("checking for keys under {prefix:0>2x?}");
+        let prefix_str = format!("0x{}", hex::encode(&prefix));
+
+        let handle = Handle::current();
+        let chunk = handle.block_on(self.real.get_keys_paged(
+            prefix_str.clone(),
+            1,
+            None,
+            Some(self.block.as_str().to_owned()),
+        ))?;
+        Ok(!chunk.is_empty())
+    }
 }
 
 impl ClientT for LiveClient {
@@ -228,5 +241,9 @@ impl ClientT for LiveClient {
 
     fn get_metadata(&self) -> super::Result<RuntimeMetadataV14> {
         Ok(self.get_metadata()?)
+    }
+
+    fn contains_data_for(&self, prefix: &[u8]) -> super::Result<bool> {
+        Ok(self.contains_data_for(prefix)?)
     }
 }
