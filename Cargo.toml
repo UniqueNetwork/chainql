@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "3.2.14", features = ["derive"] }
-frame-metadata = "15.0.0"
+frame-metadata = { path = "./frame-metadata/frame-metadata" }
 hex = "0.4.3"
-jrsonnet-evaluator = { git = "https://github.com/CertainLach/jrsonnet.git" }
+jrsonnet-evaluator = { git = "https://github.com/CertainLach/jrsonnet.git", features = [
+    "exp-destruct",
+] }
 jrsonnet-stdlib = { git = "https://github.com/CertainLach/jrsonnet.git" }
 jrsonnet-cli = { git = "https://github.com/CertainLach/jrsonnet.git" }
 jrsonnet-gcmodule = "0.3.4"
