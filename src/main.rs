@@ -52,37 +52,6 @@ struct Opts {
     string: bool,
 }
 
-/*macro_rules! simple_thunk {
-    (
-        $(
-            $(#[trace($meta:meta)])?
-            let $name:ident: $ty:ty = $expr:expr;
-        )*
-        Thunk::<$out:ty>::evaluated($val:expr)
-    ) => {{
-        #[derive(Trace)]
-        struct InvisThunk {
-            $(
-                $(#[trace($meta)])?
-                $name: $ty
-            ),*
-        }
-        impl ThunkValue for InvisThunk {
-            type Output = $out;
-
-            fn get(self: Box<Self>) -> Result<Self::Output> {
-                let Self {$($name),*} = *self;
-                Ok($val)
-            }
-        }
-
-        #[allow(clippy::redundant_field_names)]
-        Thunk::new(tb!(InvisThunk {
-            $($name: $expr,)*
-        }))
-    }};
-}*/
-
 macro_rules! bail {
     ($($tt:tt)+) => {
         return Err(anyhow!($($tt)+))
@@ -697,21 +666,15 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
         } else {
             value.to_string()?
         };
-        keyout.member(value.clone()).value(
-            //s.clone(),
-            Val::Str(StrValue::Flat(format!("0x{}", hex::encode(&prefix)).into())),
-        )?;
+        keyout.member(value.clone()).value(Val::Str(StrValue::Flat(
+            format!("0x{}", hex::encode(&prefix)).into(),
+        )))?;
         let c = MapFetcherContext {
             shared: c.shared.clone(),
             prefix: Rc::new(prefix),
             current_key_depth: c.current_key_depth + 1,
         };
         let bound = bound(make_fetched_keys_storage(c)?);
-        /*simple_thunk! {
-            #[trace(skip)]
-            let c: MapFetcherContext = c;
-            Thunk::<Val>::evaluated(make_fetched_keys_storage(c)?)
-        });*/
         out.member(value.clone()).bindable(bound)?;
     }
     let preload_keys = bound({
@@ -728,17 +691,6 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
             .map_err(client_error)?;
         Val::Obj(pending_out.clone().unwrap())
     });
-    /*simple_thunk! {
-        let shared: Rc<SharedMapFetcherContext> = c.shared;
-        let prefix: Rc<Vec<u8>> = c.prefix;
-        let pending_out: Pending<ObjValue> = pending_out.clone();
-        Thunk::<Val>::evaluated({
-            eprintln!("preloading subset of keys by prefix: {prefix:0>2x?}");
-            let prefixes = shared.fetched.iter().filter(|k| k.starts_with(&prefix)).collect::<Vec<_>>();
-            shared.client.preload_storage(prefixes.as_slice()).map_err(client_error)?;
-            Val::Obj(pending_out.unwrap())
-        })
-    });*/
     out.member("_preloadKeys".into())
         .hide()
         .bindable(preload_keys)?;
@@ -1146,7 +1098,6 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 #[builtin]
 fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
-    //let value = serde_json::Value::from_untyped(meta)?;
     let meta: RuntimeMetadataV14 = serde_json::from_value(
         serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad dump data".into())))?,
     )
@@ -1234,30 +1185,24 @@ fn main_jrsonnet(s: State) -> Result<String> {
 
     let (tla, _gc_guard) = opts.general.configure(&s)?;
     let mut cql = ObjValueBuilder::new();
-    cql.member("chain".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_chain::INST)),
-    )?;
-    cql.member("dump".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_dump::INST)),
-    )?;
-    cql.member("toHex".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_to_hex::INST)),
-    )?;
-    cql.member("fromHex".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_from_hex::INST)),
-    )?;
-    cql.member("calc".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)),
-    )?;
-    cql.member("ss58".into()).hide().value(
-        //s.clone(),
-        Val::Func(FuncVal::StaticBuiltin(builtin_ss58::INST)),
-    )?;
+    cql.member("chain".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_chain::INST)))?;
+    cql.member("dump".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_dump::INST)))?;
+    cql.member("toHex".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_to_hex::INST)))?;
+    cql.member("fromHex".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_from_hex::INST)))?;
+    cql.member("calc".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)))?;
+    cql.member("ss58".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_ss58::INST)))?;
     s.context_initializer()
         .as_any()
         .downcast_ref::<jrsonnet_stdlib::ContextInitializer>()
