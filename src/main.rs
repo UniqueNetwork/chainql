@@ -13,14 +13,14 @@ use frame_metadata::{
 };
 use jrsonnet_cli::{GeneralOpts, InputOpts};
 use jrsonnet_evaluator::{
-    error::{Error::RuntimeError, LocError, Result},
+    apply_tla,
+    error::{Error as JrError, ErrorKind::RuntimeError, Result},
     function::{builtin, FuncVal},
-    gc::TraceBox,
+    manifest::JsonFormat,
     tb,
-    typed::{Any, Typed, VecVal},
-    val::{ArrValue, ThunkValue},
-    IStr, ManifestFormat, MaybeUnbound, ObjValue, ObjValueBuilder, Pending, State, Thunk, Unbound,
-    Val,
+    typed::Typed,
+    val::{ArrValue, StrValue},
+    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Unbound, Val,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
@@ -30,15 +30,15 @@ use scale_info::{
     form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
     TypeDefPrimitive,
 };
-use serde_json::Value;
+use serde::Deserialize;
 use sp_core::{blake2_128, blake2_256, crypto::Ss58Codec, twox_128, twox_256, twox_64, U256};
 use tokio::runtime::Handle;
 
 mod client;
 
-fn metadata_obj(s: State, meta: &RuntimeMetadataV14) -> Val {
+fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
     let ty = serde_json::to_value(meta).expect("valid value");
-    serde_json::Value::into_untyped(ty, s).expect("valid json")
+    Val::deserialize(ty).expect("valid value")
 }
 
 /// chainql
@@ -52,9 +52,8 @@ struct Opts {
     string: bool,
 }
 
-macro_rules! simple_thunk {
+/*macro_rules! simple_thunk {
     (
-        let $state:ident = state;
         $(
             $(#[trace($meta:meta)])?
             let $name:ident: $ty:ty = $expr:expr;
@@ -71,7 +70,7 @@ macro_rules! simple_thunk {
         impl ThunkValue for InvisThunk {
             type Output = $out;
 
-            fn get(self: Box<Self>, $state: State) -> Result<Self::Output> {
+            fn get(self: Box<Self>) -> Result<Self::Output> {
                 let Self {$($name),*} = *self;
                 Ok($val)
             }
@@ -82,7 +81,7 @@ macro_rules! simple_thunk {
             $($name: $expr,)*
         }))
     }};
-}
+}*/
 
 macro_rules! bail {
     ($($tt:tt)+) => {
@@ -98,37 +97,37 @@ macro_rules! ensure {
 }
 macro_rules! anyhow {
     ($($tt:tt)+) => {
-        LocError::from(jrsonnet_evaluator::error::Error::RuntimeError(format!($($tt)+).into()))
+        JrError::from(jrsonnet_evaluator::error::ErrorKind::RuntimeError(format!($($tt)+).into()))
     };
 }
 
-fn missing_resolve() -> LocError {
+fn missing_resolve() -> JrError {
     anyhow!("invalid metadata: missing resolve key")
 }
 
-fn codec_error(err: parity_scale_codec::Error) -> LocError {
+fn codec_error(err: parity_scale_codec::Error) -> JrError {
     anyhow!("codec: {}", err)
 }
-fn client_error(err: client::Error) -> LocError {
+fn client_error(err: client::Error) -> JrError {
     anyhow!("client: {}", err)
 }
 
-fn bound(thunk: Thunk<Val>) -> TraceBox<dyn Unbound<Bound = Thunk<Val>>> {
+fn bound(val: Val) -> impl Unbound<Bound = Val> {
     #[derive(Trace)]
-    struct Bound(Thunk<Val>);
+    struct Bound(Val);
     impl Unbound for Bound {
-        type Bound = Thunk<Val>;
+        type Bound = Val;
 
         fn bind(
             &self,
-            _s: State,
+            //_s: State,
             _sup: Option<ObjValue>,
             _this: Option<ObjValue>,
         ) -> Result<Self::Bound> {
             Ok(self.0.clone())
         }
     }
-    tb!(Bound(thunk))
+    Bound(val)
 }
 
 fn decode_maybe_compact<I, T>(dec: &mut I, compact: bool) -> Result<T>
@@ -157,7 +156,6 @@ where
 }
 
 fn encode_obj_value<O>(
-    s: State,
     reg: &PortableRegistry,
     typ: &[Field<PortableForm>],
     compact: bool,
@@ -168,22 +166,22 @@ where
     O: Output,
 {
     if typ.len() == 1 {
-        return encode_value(s, reg, *typ[0].ty(), compact, val, out, false);
+        return encode_value(reg, *typ[0].ty(), compact, val, out, false);
     }
-    let val = ObjValue::from_untyped(val, s.clone())?;
+    let val = ObjValue::from_untyped(val)?;
     for (i, f) in typ.iter().enumerate() {
         let field_name: IStr = f
             .name()
             .cloned()
             .unwrap_or_else(|| format!("unnamed{}", i))
             .into();
-        s.push_description(
+        State::push_description(
             || format!(".{field_name}"),
             || {
                 let field = val
-                    .get(s.clone(), field_name.clone())?
+                    .get(field_name.clone())?
                     .ok_or_else(|| anyhow!("missing field {field_name}"))?;
-                encode_value(s.clone(), reg, *f.ty(), compact, field, out, false)?;
+                encode_value(reg, *f.ty(), compact, field, out, false)?;
                 Ok(())
             },
         )?;
@@ -192,7 +190,6 @@ where
 }
 
 fn decode_obj_value<I>(
-    s: State,
     dec: &mut I,
     reg: &PortableRegistry,
     typ: &[Field<PortableForm>],
@@ -202,18 +199,18 @@ where
     I: Input,
 {
     if typ.len() == 1 {
-        return decode_value(s, dec, reg, *typ[0].ty(), compact);
+        return decode_value(dec, reg, *typ[0].ty(), compact);
     }
     let mut out = ObjValueBuilder::new();
     for (i, f) in typ.iter().enumerate() {
-        let field = decode_value(s.clone(), dec, reg, *f.ty(), compact)?;
+        let field = decode_value(dec, reg, *f.ty(), compact)?;
         out.member(
             f.name()
                 .cloned()
                 .unwrap_or_else(|| format!("unnamed{}", i))
                 .into(),
         )
-        .value(s.clone(), field)?;
+        .value(field)?;
     }
     Ok(Val::Obj(out.build()))
 }
@@ -237,20 +234,19 @@ fn extract_newtypes(
         _ => Ok((compact, typ)),
     }
 }
-fn maybe_json_parse(s: State, v: Val, from_string: bool) -> Result<Val> {
+fn maybe_json_parse(v: Val, from_string: bool) -> Result<Val> {
     if !from_string {
         return Ok(v);
     }
     if let Some(str) = v.as_str() {
-        let value: Value =
+        let value: Val =
             serde_json::from_str(&str).map_err(|e| RuntimeError(format!("json: {e}").into()))?;
-        Ok(Value::into_untyped(value, s)?)
+        Ok(value)
     } else {
         Ok(v)
     }
 }
 fn encode_value<O>(
-    s: State,
     reg: &PortableRegistry,
     mut typ: UntrackedSymbol<TypeId>,
     mut compact: bool,
@@ -270,8 +266,8 @@ where
         .type_def()
     {
         TypeDef::Composite(comp) => {
-            let val = maybe_json_parse(s.clone(), val, from_string)?;
-            encode_obj_value(s, reg, comp.fields(), compact, val, out)?;
+            let val = maybe_json_parse(val, from_string)?;
+            encode_obj_value(reg, comp.fields(), compact, val, out)?;
         }
         TypeDef::Variant(e) => {
             if let Some(str) = val.as_str() {
@@ -282,19 +278,19 @@ where
                     }
                 }
             }
-            let val = maybe_json_parse(s.clone(), val, from_string)?;
-            let v = ObjValue::from_untyped(val, s.clone())?;
+            let val = maybe_json_parse(val, from_string)?;
+            let v = ObjValue::from_untyped(val)?;
             let name = v.fields();
             ensure!(name.len() == 1, "not a enum");
             let name = name[0].clone();
             let value = v
-                .get(s.clone(), name.clone())?
+                .get(name.clone())?
                 .expect("value exists, as name is obtained from .fields()");
 
             for variant in e.variants() {
                 if variant.name().as_str() == name.as_str() {
                     variant.index().encode_to(out);
-                    return encode_obj_value(s, reg, variant.fields(), compact, value, out);
+                    return encode_obj_value(reg, variant.fields(), compact, value, out);
                 }
             }
             bail!("variant not found: {name}");
@@ -306,24 +302,16 @@ where
                     .type_def(),
                 TypeDef::Primitive(TypeDefPrimitive::U8)
             ) {
-                let v = String::from_untyped(val, s)?;
+                let v = String::from_untyped(val)?;
                 let raw = from_hex(&v)?;
                 raw.encode_to(out);
                 return Ok(());
             }
-            let val = maybe_json_parse(s.clone(), val, from_string)?;
-            let v = VecVal::from_untyped(val, s.clone())?.0;
+            let val = maybe_json_parse(val, from_string)?;
+            let v = Vec::<Val>::from_untyped(val)?;
             Compact(v.len() as u32).encode_to(out);
             for val in v.iter() {
-                encode_value(
-                    s.clone(),
-                    reg,
-                    *e.type_param(),
-                    compact,
-                    val.clone(),
-                    out,
-                    false,
-                )?;
+                encode_value(reg, *e.type_param(), compact, val.clone(), out, false)?;
             }
         }
         TypeDef::Array(e) => {
@@ -333,7 +321,7 @@ where
                     .type_def(),
                 TypeDef::Primitive(TypeDefPrimitive::U8)
             ) {
-                let v = String::from_untyped(val, s)?;
+                let v = String::from_untyped(val)?;
                 let raw = from_hex(&v)?;
                 ensure!(
                     e.len() as usize == raw.len(),
@@ -346,8 +334,8 @@ where
                 }
                 return Ok(());
             }
-            let val = maybe_json_parse(s.clone(), val, from_string)?;
-            let v = VecVal::from_untyped(val, s.clone())?.0;
+            let val = maybe_json_parse(val, from_string)?;
+            let v = Vec::<Val>::from_untyped(val)?;
             ensure!(
                 e.len() as usize == v.len(),
                 "array has wrong number of elements, expected {}, got {}",
@@ -355,96 +343,88 @@ where
                 v.len(),
             );
             for val in v.iter() {
-                encode_value(
-                    s.clone(),
-                    reg,
-                    *e.type_param(),
-                    compact,
-                    val.clone(),
-                    out,
-                    false,
-                )?;
+                encode_value(reg, *e.type_param(), compact, val.clone(), out, false)?;
             }
         }
         TypeDef::Tuple(e) => {
-            let val = maybe_json_parse(s.clone(), val, from_string)?;
-            let v = VecVal::from_untyped(val, s.clone())?.0;
+            let val = maybe_json_parse(val, from_string)?;
+            let v = Vec::<Val>::from_untyped(val)?;
             ensure!(
                 e.fields().len() == v.len(),
                 "tuple has wrong number of elements"
             );
             for (ty, val) in e.fields().iter().zip(v.iter()) {
-                encode_value(s.clone(), reg, *ty, compact, val.clone(), out, false)?;
+                encode_value(reg, *ty, compact, val.clone(), out, false)?;
             }
         }
         TypeDef::Primitive(p) => match p {
             TypeDefPrimitive::Bool => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
-                let b = bool::from_untyped(val, s)?;
+                let val = maybe_json_parse(val, from_string)?;
+                let b = bool::from_untyped(val)?;
                 b.encode_to(out)
             }
             TypeDefPrimitive::Char => bail!("char not supported"),
             TypeDefPrimitive::Str => {
-                let s = String::from_untyped(val, s)?;
+                let s = String::from_untyped(val)?;
                 s.encode_to(out)
             }
             TypeDefPrimitive::U8 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
-                let v = u8::from_untyped(val, s)?;
+                let val = maybe_json_parse(val, from_string)?;
+                let v = u8::from_untyped(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::U16 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
-                let v = u16::from_untyped(val, s)?;
+                let val = maybe_json_parse(val, from_string)?;
+                let v = u16::from_untyped(val)?;
                 encode_maybe_compact::<u16, _>(compact, v, out)
             }
             TypeDefPrimitive::U32 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
-                let v = u32::from_untyped(val, s)?;
+                let val = maybe_json_parse(val, from_string)?;
+                let v = u32::from_untyped(val)?;
                 encode_maybe_compact::<u32, _>(compact, v, out)
             }
             TypeDefPrimitive::U64 => {
-                let vs = String::from_untyped(val, s)?;
+                let vs = String::from_untyped(val)?;
                 let v: u64 = vs.parse().map_err(|e| anyhow!("{e}"))?;
                 encode_maybe_compact::<u64, _>(compact, v, out)
             }
             TypeDefPrimitive::U128 => {
-                let vs = String::from_untyped(val, s)?;
+                let vs = String::from_untyped(val)?;
                 let v: u128 = vs.parse().map_err(|e| anyhow!("{e}"))?;
                 encode_maybe_compact::<u128, _>(compact, v, out)
             }
             TypeDefPrimitive::U256 => {
                 ensure!(!compact, "U256 can't be compact");
-                let vs = String::from_untyped(val, s)?;
+                let vs = String::from_untyped(val)?;
                 let v: U256 = vs.parse().map_err(|e| anyhow!("{e}"))?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I8 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
-                let v = i8::from_untyped(val, s)?;
+                let val = maybe_json_parse(val, from_string)?;
+                let v = i8::from_untyped(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I16 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
+                let val = maybe_json_parse(val, from_string)?;
                 ensure!(!compact, "int can't be compact");
-                let v = i16::from_untyped(val, s)?;
+                let v = i16::from_untyped(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I32 => {
-                let val = maybe_json_parse(s.clone(), val, from_string)?;
+                let val = maybe_json_parse(val, from_string)?;
                 ensure!(!compact, "int can't be compact");
-                let v = i32::from_untyped(val, s)?;
+                let v = i32::from_untyped(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I64 => {
                 ensure!(!compact, "int can't be compact");
-                let vs = String::from_untyped(val, s)?;
+                let vs = String::from_untyped(val)?;
                 let v: i64 = vs.parse().map_err(|e| anyhow!("{e}"))?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I128 => {
                 ensure!(!compact, "int can't be compact");
-                let vs = String::from_untyped(val, s)?;
+                let vs = String::from_untyped(val)?;
                 let v: i128 = vs.parse().map_err(|e| anyhow!("{e}"))?;
                 v.encode_to(out)
             }
@@ -452,13 +432,12 @@ where
                 bail!("i256 not supported");
             }
         },
-        TypeDef::Compact(_) => encode_value(s, reg, typ, true, val, out, from_string)?,
+        TypeDef::Compact(_) => encode_value(reg, typ, true, val, out, from_string)?,
         TypeDef::BitSequence(_) => bail!("bitseq not supported"),
     }
     Ok(())
 }
 fn decode_value<I>(
-    s: State,
     dec: &mut I,
     reg: &PortableRegistry,
     mut typ: UntrackedSymbol<TypeId>,
@@ -476,17 +455,17 @@ where
             .ok_or_else(missing_resolve)?
             .type_def()
         {
-            TypeDef::Composite(c) => decode_obj_value(s, dec, reg, c.fields(), compact)?,
+            TypeDef::Composite(c) => decode_obj_value(dec, reg, c.fields(), compact)?,
             TypeDef::Variant(e) => {
                 let idx = u8::decode(dec).map_err(codec_error)?;
                 for var in e.variants() {
                     if var.index() == idx {
                         if var.fields().is_empty() {
-                            return Ok(Val::Str(var.name().as_str().into()));
+                            return Ok(Val::Str(StrValue::Flat(var.name().as_str().into())));
                         }
                         let mut obj = ObjValueBuilder::new();
-                        let val = decode_obj_value(s.clone(), dec, reg, var.fields(), compact)?;
-                        obj.member(var.name().as_str().into()).value(s, val)?;
+                        let val = decode_obj_value(dec, reg, var.fields(), compact)?;
+                        obj.member(var.name().as_str().into()).value(val)?;
 
                         return Ok(Val::Obj(obj.build()));
                     }
@@ -505,18 +484,18 @@ where
                     out[0] = b'0';
                     out[1] = b'x';
                     hex::encode_to_slice(&raw, &mut out[2..]).expect("size is enough");
-                    return Ok(Val::Str(
+                    return Ok(Val::Str(StrValue::Flat(
                         String::from_utf8(out).expect("correct utf8").into(),
-                    ));
+                    )));
                 }
 
                 let mut out = vec![];
                 let size = <Compact<u32>>::decode(dec).map_err(codec_error)?;
                 for _ in 0..size.0 {
-                    let val = decode_value(s.clone(), dec, reg, *seq.type_param(), compact)?;
+                    let val = decode_value(dec, reg, *seq.type_param(), compact)?;
                     out.push(val);
                 }
-                Val::Arr(ArrValue::Eager(Cc::new(out)))
+                Val::Arr(ArrValue::eager(out))
             }
             TypeDef::Array(arr) => {
                 if matches!(
@@ -533,23 +512,25 @@ where
                     out[0] = b'0';
                     out[1] = b'x';
                     hex::encode_to_slice(&raw, &mut out[2..]).expect("size is enough");
-                    return Ok(Val::Str(String::from_utf8(out).expect("utf8").into()));
+                    return Ok(Val::Str(StrValue::Flat(
+                        String::from_utf8(out).expect("utf8").into(),
+                    )));
                 }
 
                 let mut out = vec![];
                 for _ in 0..arr.len() {
-                    let val = decode_value(s.clone(), dec, reg, *arr.type_param(), compact)?;
+                    let val = decode_value(dec, reg, *arr.type_param(), compact)?;
                     out.push(val);
                 }
-                Val::Arr(ArrValue::Eager(Cc::new(out)))
+                Val::Arr(ArrValue::eager(out))
             }
             TypeDef::Tuple(t) => {
                 let mut out = vec![];
                 for t in t.fields() {
-                    let val = decode_value(s.clone(), dec, reg, *t, compact)?;
+                    let val = decode_value(dec, reg, *t, compact)?;
                     out.push(val);
                 }
-                Val::Arr(ArrValue::Eager(Cc::new(out)))
+                Val::Arr(ArrValue::eager(out))
             }
             TypeDef::Primitive(p) => match p {
                 TypeDefPrimitive::Bool => {
@@ -559,7 +540,7 @@ where
                 TypeDefPrimitive::Char => bail!("char not supported"),
                 TypeDefPrimitive::Str => {
                     let val = String::decode(dec).map_err(codec_error)?;
-                    Val::Str(val.into())
+                    Val::Str(StrValue::Flat(val.into()))
                 }
                 TypeDefPrimitive::U8 => {
                     let val = u8::decode(dec).map_err(codec_error)?;
@@ -575,16 +556,16 @@ where
                 }
                 TypeDefPrimitive::U64 => {
                     let val = decode_maybe_compact::<_, u64>(dec, compact)?;
-                    Val::Str(val.to_string().into())
+                    Val::Str(StrValue::Flat(val.to_string().into()))
                 }
                 TypeDefPrimitive::U128 => {
                     let val = decode_maybe_compact::<_, u128>(dec, compact)?;
-                    Val::Str(val.to_string().into())
+                    Val::Str(StrValue::Flat(val.to_string().into()))
                 }
                 TypeDefPrimitive::U256 => {
                     ensure!(!compact, "u256 can't be compact");
                     let val = U256::decode(dec).map_err(codec_error)?;
-                    Val::Str(val.to_string().into())
+                    Val::Str(StrValue::Flat(val.to_string().into()))
                 }
                 TypeDefPrimitive::I8 => {
                     let val = i8::decode(dec).map_err(codec_error)?;
@@ -603,25 +584,24 @@ where
                 TypeDefPrimitive::I64 => {
                     ensure!(!compact, "int can't be compact");
                     let val = i64::decode(dec).map_err(codec_error)?;
-                    Val::Str(val.to_string().into())
+                    Val::Str(StrValue::Flat(val.to_string().into()))
                 }
                 TypeDefPrimitive::I128 => {
                     ensure!(!compact, "int can't be compact");
                     let val = i128::decode(dec).map_err(codec_error)?;
-                    Val::Str(val.to_string().into())
+                    Val::Str(StrValue::Flat(val.to_string().into()))
                 }
                 TypeDefPrimitive::I256 => {
                     bail!("i256 not supported");
                 }
             },
-            TypeDef::Compact(c) => decode_value(s, dec, reg, *c.type_param(), true)?,
+            TypeDef::Compact(c) => decode_value(dec, reg, *c.type_param(), true)?,
             TypeDef::BitSequence(_) => bail!("bitseq not supported"),
         },
     )
 }
 
 fn fetch_decode_key(
-    s: State,
     key: &[u8],
     client: Client,
     registry: Rc<PortableRegistry>,
@@ -630,9 +610,9 @@ fn fetch_decode_key(
 ) -> Result<Val> {
     let value = client.get_storage(key).map_err(client_error)?;
     Ok(if let Some(value) = value {
-        decode_value(s, &mut &value[..], &registry, typ, false)?
+        decode_value(&mut &value[..], &registry, typ, false)?
     } else if let Some(default) = default {
-        decode_value(s, &mut &default[..], &registry, typ, false)?
+        decode_value(&mut &default[..], &registry, typ, false)?
     } else {
         Val::Null
     })
@@ -658,13 +638,12 @@ impl MapFetcherContext {
     }
 }
 
-fn make_fetched_keys_storage(s: State, c: MapFetcherContext) -> Result<Val> {
+fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
     let key = if let Some(k) = c.key() {
         k
     } else {
         // TODO: bulk fetching for last key and assert!(!keys.is_empty())
         return fetch_decode_key(
-            s,
             &c.prefix,
             c.shared.client.clone(),
             c.shared.reg.clone(),
@@ -700,9 +679,9 @@ fn make_fetched_keys_storage(s: State, c: MapFetcherContext) -> Result<Val> {
             let mut bytes = vec![0u8; e];
             bytes.copy_from_slice(&key[..e]);
             key = &key[e..];
-            Val::Str(to_hex(&bytes).into())
+            Val::Str(StrValue::Flat(to_hex(&bytes).into()))
         } else {
-            decode_value(s.clone(), &mut key, &c.shared.reg, key_ty, false)?
+            decode_value(&mut key, &c.shared.reg, key_ty, false)?
         };
         // dbg!(&value);
         let value_len = key_plus_value_len - key.len();
@@ -716,27 +695,40 @@ fn make_fetched_keys_storage(s: State, c: MapFetcherContext) -> Result<Val> {
         let value = if let Some(str) = value.as_str() {
             str
         } else {
-            value.to_string(s.clone())?
+            value.to_string()?
         };
         keyout.member(value.clone()).value(
-            s.clone(),
-            Val::Str(format!("0x{}", hex::encode(&prefix)).into()),
+            //s.clone(),
+            Val::Str(StrValue::Flat(format!("0x{}", hex::encode(&prefix)).into())),
         )?;
         let c = MapFetcherContext {
             shared: c.shared.clone(),
             prefix: Rc::new(prefix),
             current_key_depth: c.current_key_depth + 1,
         };
-        let bound = bound(simple_thunk! {
-            let s = state;
+        let bound = bound(make_fetched_keys_storage(c)?);
+        /*simple_thunk! {
             #[trace(skip)]
             let c: MapFetcherContext = c;
-            Thunk::<Val>::evaluated(make_fetched_keys_storage(s, c)?)
-        });
-        out.member(value.clone()).bindable(s.clone(), bound)?;
+            Thunk::<Val>::evaluated(make_fetched_keys_storage(c)?)
+        });*/
+        out.member(value.clone()).bindable(bound)?;
     }
-    let preload_keys = bound(simple_thunk! {
-        let _s = state;
+    let preload_keys = bound({
+        eprintln!("preloading subset of keys by prefix: {0:0>2x?}", c.prefix);
+        let prefixes = c
+            .shared
+            .fetched
+            .iter()
+            .filter(|k| k.starts_with(&c.prefix))
+            .collect::<Vec<_>>();
+        c.shared
+            .client
+            .preload_storage(prefixes.as_slice())
+            .map_err(client_error)?;
+        Val::Obj(pending_out.clone().unwrap())
+    });
+    /*simple_thunk! {
         let shared: Rc<SharedMapFetcherContext> = c.shared;
         let prefix: Rc<Vec<u8>> = c.prefix;
         let pending_out: Pending<ObjValue> = pending_out.clone();
@@ -746,19 +738,18 @@ fn make_fetched_keys_storage(s: State, c: MapFetcherContext) -> Result<Val> {
             shared.client.preload_storage(prefixes.as_slice()).map_err(client_error)?;
             Val::Obj(pending_out.unwrap())
         })
-    });
+    });*/
     out.member("_preloadKeys".into())
         .hide()
-        .bindable(s.clone(), preload_keys)?;
+        .bindable(preload_keys)?;
     out.member("_key".into())
         .hide()
-        .value(s, Val::Obj(keyout.build()))?;
+        .value(Val::Obj(keyout.build()))?;
     let out = out.build();
     pending_out.fill(out.clone());
     Ok(Val::Obj(out))
 }
 fn make_fetch_keys_storage(
-    s: State,
     client: Client,
     prefix: Vec<u8>,
     reg: Rc<PortableRegistry>,
@@ -767,25 +758,21 @@ fn make_fetch_keys_storage(
     value_default: Option<Vec<u8>>,
 ) -> Result<Val> {
     let fetched = client.get_keys(prefix.as_slice()).map_err(client_error)?;
-    make_fetched_keys_storage(
-        s,
-        MapFetcherContext {
-            shared: Rc::new(SharedMapFetcherContext {
-                client,
-                reg,
-                fetched,
-                keys,
-                value_typ,
-                value_default,
-            }),
-            prefix: Rc::new(prefix),
-            current_key_depth: 0,
-        },
-    )
+    make_fetched_keys_storage(MapFetcherContext {
+        shared: Rc::new(SharedMapFetcherContext {
+            client,
+            reg,
+            fetched,
+            keys,
+            value_typ,
+            value_default,
+        }),
+        prefix: Rc::new(prefix),
+        current_key_depth: 0,
+    })
 }
 
 fn make_pallet_key(
-    s: State,
     client: Client,
     data: PalletMetadata<PortableForm>,
     registry: Rc<PortableRegistry>,
@@ -812,41 +799,38 @@ fn make_pallet_key(
                 StorageEntryModifier::Optional => None,
                 StorageEntryModifier::Default => Some(entry.default),
             };
-            keyout.member(entry.name.clone().into()).value(
-                s.clone(),
-                Val::Str(format!("0x{}", hex::encode(&entry_key)).into()),
-            )?;
+            keyout
+                .member(entry.name.clone().into())
+                .value(Val::Str(StrValue::Flat(
+                    format!("0x{}", hex::encode(&entry_key)).into(),
+                )))?;
             match entry.ty {
                 StorageEntryType::Plain(v) => {
-                    encode_keyout.member(entry.name.clone().into()).value(
-                        s.clone(),
-                        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode_key {
-                            reg: registry.clone(),
-                            prefix: Rc::new(entry_key.clone()),
-                            key: Key(vec![])
-                        })))),
-                    )?;
-                    encode_valueout.member(entry.name.clone().into()).value(
-                        s.clone(),
-                        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode_value {
-                            reg: registry.clone(),
-                            ty: ValueId(v),
-                        })))),
-                    )?;
+                    encode_keyout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_encode_key {
+                                reg: registry.clone(),
+                                prefix: Rc::new(entry_key.clone()),
+                                key: Key(vec![])
+                            }
+                        )))))?;
+                    encode_valueout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_encode_value {
+                                reg: registry.clone(),
+                                ty: ValueId(v),
+                            }
+                        )))))?;
                     out.member(entry.name.clone().into())
-                        .binding(
-                            s.clone(),
-                            MaybeUnbound::Bound(simple_thunk! {
-                                let s = state;
-                                let entry_key: Vec<u8> = entry_key;
-                                let client: Client = client.clone();
-                                #[trace(skip)]
-                                let v: UntrackedSymbol<TypeId> = v;
-                                let default: Option<Vec<u8>> = default;
-                                let registry: Rc<PortableRegistry> = registry.clone();
-                                Thunk::<Val>::evaluated(fetch_decode_key(s,  entry_key.as_slice(), client, registry, v, default)?)
-                            }),
-                        )?;
+                        .thunk(Thunk::<Val>::evaluated(fetch_decode_key(
+                            entry_key.as_slice(),
+                            client.clone(),
+                            registry.clone(),
+                            v,
+                            default,
+                        )?))?;
                 }
                 StorageEntryType::Map {
                     hashers,
@@ -877,106 +861,85 @@ fn make_pallet_key(
                             .zip(fields.iter().map(|s| **s))
                             .collect::<Vec<(_, _)>>()
                     };
-                    encode_keyout.member(entry.name.clone().into()).value(
-                        s.clone(),
-                        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode_key {
-                            reg: registry.clone(),
-                            prefix: Rc::new(entry_key.clone()),
-                            key: Key(keys.clone())
-                        })))),
-                    )?;
-                    encode_valueout.member(entry.name.clone().into()).value(
-                        s.clone(),
-                        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode_value {
-                            reg: registry.clone(),
-                            ty: ValueId(value),
-                        })))),
-                    )?;
+                    encode_keyout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_encode_key {
+                                reg: registry.clone(),
+                                prefix: Rc::new(entry_key.clone()),
+                                key: Key(keys.clone())
+                            }
+                        )))))?;
+                    encode_valueout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_encode_value {
+                                reg: registry.clone(),
+                                ty: ValueId(value),
+                            }
+                        )))))?;
                     key_args
                         .member(entry.name.clone().into())
-                        .value(s.clone(), Val::Num(keys.len() as f64))?;
+                        .value(Val::Num(keys.len() as f64))?;
 
-                    out.member(entry.name.clone().into()).binding(
-                        s.clone(),
-                        MaybeUnbound::Bound(simple_thunk! {
-                            let s = state;
-                            let entry_key: Vec<u8> = entry_key;
-                            let client: Client = client.clone();
-                            #[trace(skip)]
-                            let value: UntrackedSymbol<TypeId> = value;
-                            let default: Option<Vec<u8>> = default;
-                            let registry: Rc<PortableRegistry> = registry.clone();
-                            #[trace(skip)]
-                            let keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)> = keys;
-                            Thunk::<Val>::evaluated(make_fetch_keys_storage(
-                                s,
-                                client,
-                                entry_key,
-                                registry,
-                                keys,
-                                value,
-                                default,
-                            )?)
-                        }),
-                    )?;
+                    out.member(entry.name.clone().into())
+                        .thunk(Thunk::<Val>::evaluated(make_fetch_keys_storage(
+                            client.clone(),
+                            entry_key,
+                            registry.clone(),
+                            keys,
+                            value,
+                            default,
+                        )?))?;
                 }
             }
         }
     }
     out.member("_key".into())
         .hide()
-        .value(s.clone(), Val::Obj(keyout.build()))?;
+        .value(Val::Obj(keyout.build()))?;
     out.member("_encodeKey".into())
         .hide()
-        .value(s.clone(), Val::Obj(encode_keyout.build()))?;
+        .value(Val::Obj(encode_keyout.build()))?;
     out.member("_encodeValue".into())
         .hide()
-        .value(s.clone(), Val::Obj(encode_valueout.build()))?;
+        .value(Val::Obj(encode_valueout.build()))?;
     out.member("_keyArgs".into())
         .hide()
-        .value(s, Val::Obj(key_args.build()))?;
+        .value(Val::Obj(key_args.build()))?;
     Ok(out.build())
 }
 
 fn fetch_raw(key: Vec<u8>, client: Client) -> Result<Val> {
     let value = client.get_storage(key.as_slice()).map_err(client_error)?;
     Ok(if let Some(value) = value {
-        Val::Arr(ArrValue::Bytes(value.as_slice().into()))
+        Val::Arr(ArrValue::bytes(value.as_slice().into()))
     } else {
         // Should never occur?
         Val::Null
     })
 }
 
-fn make_raw_key(s: State, client: Client) -> Result<ObjValue> {
+fn make_raw_key(client: Client) -> Result<ObjValue> {
     let mut out = ObjValueBuilder::new();
     let pending_out = Pending::<ObjValue>::new();
     let fetched = client.get_keys(&[]).map_err(client_error)?;
     for key in fetched.iter().cloned() {
         let key_str = format!("0x{}", hex::encode(&key));
-        let value = bound(simple_thunk! {
-            let _s = state;
-            let key: Vec<u8> = key;
-            let client: Client = client.clone();
-            Thunk::<Val>::evaluated(fetch_raw(key, client)?)
-        });
-        out.member(key_str.into()).bindable(s.clone(), value)?;
+        let value = bound(fetch_raw(key, client.clone())?);
+        out.member(key_str.into()).bindable(value)?;
     }
     // TODO: key filter?
-    let preload_keys = bound(simple_thunk! {
-        let _s = state;
-        let pending_out: Pending<ObjValue> = pending_out.clone();
-        let client: Client = client;
-        let fetched: Vec<Vec<u8>> = fetched;
-        Thunk::<Val>::evaluated({
-            eprintln!("preloading all storage keys");
-            client.preload_storage(&fetched.iter().collect::<Vec<_>>()).map_err(client_error)?;
-            Val::Obj(pending_out.unwrap())
-        })
+    let preload_keys = bound({
+        eprintln!("preloading all storage keys");
+        client
+            .preload_storage(&fetched.iter().collect::<Vec<_>>())
+            .map_err(client_error)?;
+        Val::Obj(pending_out.clone().unwrap())
     });
     out.member("_preloadKeys".into())
         .hide()
-        .bindable(s, preload_keys)?;
+        .bindable(preload_keys)?;
     let out = out.build();
     pending_out.fill(out.clone());
     Ok(out)
@@ -991,8 +954,7 @@ struct Key(#[trace(skip)] Vec<(StorageHasher, UntrackedSymbol<TypeId>)>);
 ))]
 fn builtin_encode_key(
     this: &builtin_encode_key,
-    s: State,
-    keyi: VecVal,
+    keyi: Vec<Val>,
     from_string: Option<bool>,
 ) -> Result<String> {
     let from_string = from_string.unwrap_or(false);
@@ -1000,15 +962,15 @@ fn builtin_encode_key(
     let key = this.key.clone();
 
     ensure!(
-        key.0.len() == keyi.0.len(),
+        key.0.len() == keyi.len(),
         "wrong number of keys, expected {}, got {}",
         key.0.len(),
-        keyi.0.len()
+        keyi.len()
     );
 
     let mut out = this.prefix.as_slice().to_owned();
 
-    'key: for ((h, t), k) in key.0.iter().zip(keyi.0.iter()) {
+    'key: for ((h, t), k) in key.0.iter().zip(keyi.iter()) {
         let mut ko = vec![];
 
         if from_string {
@@ -1034,7 +996,7 @@ fn builtin_encode_key(
             }
         }
 
-        encode_value(s.clone(), &reg, *t, false, k.clone(), &mut ko, from_string)?;
+        encode_value(&reg, *t, false, k.clone(), &mut ko, from_string)?;
         let kh = match h {
             StorageHasher::Blake2_128 => blake2_128(&ko).to_vec(),
             StorageHasher::Blake2_256 => blake2_256(&ko).to_vec(),
@@ -1056,33 +1018,33 @@ struct ValueId(#[trace(skip)] UntrackedSymbol<TypeId>);
     reg: Rc<PortableRegistry>,
     ty: ValueId,
 ))]
-fn builtin_encode_value(this: &builtin_encode_value, s: State, value: Any) -> Result<String> {
+fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<String> {
     let reg = this.reg.clone();
 
     let mut out = Vec::new();
-    encode_value(s, &reg, this.ty.0, false, value.0, &mut out, false)?;
+    encode_value(&reg, this.ty.0, false, value, &mut out, false)?;
     Ok(to_hex(&out))
 }
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
-fn builtin_encode(this: &builtin_encode, s: State, typ: u32, v: Any) -> Result<String> {
+fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<String> {
     let typ = Compact(typ).encode();
     let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
     let mut out = Vec::new();
-    encode_value(s, &this.reg, sym, false, v.0, &mut out, false)?;
+    encode_value(&this.reg, sym, false, v, &mut out, false)?;
 
     Ok(to_hex(&out))
 }
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
-fn builtin_decode(this: &builtin_decode, s: State, typ: u32, v: IStr) -> Result<Any> {
+fn builtin_decode(this: &builtin_decode, typ: u32, v: IStr) -> Result<Val> {
     let v = from_hex(&v)?;
     let typ = Compact(typ).encode();
     let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
 
-    decode_value(s, &mut v.as_slice(), &this.reg, sym, false).map(Any)
+    decode_value(&mut v.as_slice(), &this.reg, sym, false).map(Val::from)
 }
 
 #[builtin]
@@ -1092,7 +1054,7 @@ fn builtin_ss58(v: IStr) -> Result<IStr> {
     Ok(to_hex(s.as_ref()).into())
 }
 
-fn make_block(s: State, client: Client, opts: ChainOpts) -> Result<ObjValue> {
+fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
     let mut obj = ObjValueBuilder::new();
     let meta = client.get_metadata().map_err(client_error)?;
     let reg = Rc::new(meta.types.clone());
@@ -1109,39 +1071,29 @@ fn make_block(s: State, client: Client, opts: ChainOpts) -> Result<ObjValue> {
                 continue;
             }
         }
-        obj.member(pallet.name.clone().into()).binding(
-            s.clone(),
-            MaybeUnbound::Bound(simple_thunk! {
-                let s = state;
-                let client: Client = client.clone();
-                #[trace(skip)]
-                let pallet: PalletMetadata<PortableForm> = pallet.clone();
-                let reg: Rc<PortableRegistry> = reg.clone();
-                let opts: ChainOpts = opts;
-                Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(s, client, pallet, reg, opts)?))
-            }),
-        )?;
+        obj.member(pallet.name.clone().into())
+            .thunk(Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(
+                client.clone(),
+                pallet.clone(),
+                reg.clone(),
+                opts,
+            )?)))?;
     }
-    let meta = metadata_obj(s.clone(), &meta);
-    obj.member("_meta".into()).hide().value(s.clone(), meta)?;
-    obj.member("_raw".into()).hide().binding(
-        s.clone(),
-        MaybeUnbound::Bound(simple_thunk! {
-            let s = state;
-            let client: Client = client;
-            Thunk::<Val>::evaluated(Val::Obj(make_raw_key(s, client)?))
-        }),
-    )?;
-    obj.member("_encode".into()).hide().value(
-        s.clone(),
-        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode {
+    let meta = metadata_obj(&meta);
+    obj.member("_meta".into()).hide().value(meta)?;
+    obj.member("_raw".into())
+        .hide()
+        .thunk(Thunk::<Val>::evaluated(Val::Obj(make_raw_key(client)?)))?;
+    obj.member("_encode".into())
+        .hide()
+        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode {
             reg: reg.clone()
-        })))),
-    )?;
-    obj.member("_decode".into()).hide().value(
-        s,
-        Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_decode { reg })))),
-    )?;
+        })))))?;
+    obj.member("_decode".into())
+        .hide()
+        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_decode {
+            reg
+        })))))?;
     Ok(obj.build())
 }
 
@@ -1149,9 +1101,8 @@ fn make_block(s: State, client: Client, opts: ChainOpts) -> Result<ObjValue> {
     client: ClientShared,
     opts: ChainOpts,
 ))]
-fn chain_block(this: &chain_block, s: State, block: u32) -> Result<ObjValue> {
+fn chain_block(this: &chain_block, block: u32) -> Result<ObjValue> {
     make_block(
-        s,
         Client::new(
             this.client
                 .block(Some(block))
@@ -1168,45 +1119,49 @@ struct ChainOpts {
 }
 
 #[builtin]
-fn builtin_chain(s: State, url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
     let client = ClientShared::new(url)
         .map_err(client::Error::Live)
         .map_err(client_error)?;
     let mut obj = ObjValueBuilder::new();
-    obj.member("block".into()).value(
-        s.clone(),
-        Val::Func(FuncVal::Builtin(Cc::new(tb!(chain_block {
+    obj.member("block".into())
+        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(chain_block {
             client: client.clone(),
             opts,
-        })))),
-    )?;
+        })))))?;
     obj.member("latest".into())
-        .binding(s, MaybeUnbound::Bound(simple_thunk!{
-            let s = state;
-            let client: ClientShared = client;
-            let opts: ChainOpts = opts;
-            Thunk::<Val>::evaluated(Val::Obj(make_block(s, Client::new(client.block(None).map_err(client::Error::Live).map_err(client_error)?), opts)?))
-        }))?;
+        .thunk(Thunk::<Val>::evaluated(Val::Obj(make_block(
+            Client::new(
+                client
+                    .block(None)
+                    .map_err(client::Error::Live)
+                    .map_err(client_error)?,
+            ),
+            opts,
+        )?)))?;
     Ok(obj.build())
 }
 
 #[builtin]
-fn builtin_dump(s: State, meta: Any, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
+fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
-    let value = serde_json::Value::from_untyped(meta.0, s.clone())?;
-    let meta: RuntimeMetadataV14 = serde_json::from_value(value).unwrap();
+    //let value = serde_json::Value::from_untyped(meta)?;
+    let meta: RuntimeMetadataV14 = serde_json::from_value(
+        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad dump data".into())))?,
+    )
+    .unwrap();
     let mut data = BTreeMap::new();
     for key in dump.fields() {
         let k = from_hex(&key)?;
-        let v = dump.get(s.clone(), key)?.expect("iterating over fields");
+        let v = dump.get(key)?.expect("iterating over fields");
         let v = v
             .as_str()
             .ok_or_else(|| RuntimeError("bad dump data".into()))?;
         let v = from_hex(&v)?;
         data.insert(k, v);
     }
-    make_block(s, Client::new(ClientDump { meta, data }), opts)
+    make_block(Client::new(ClientDump { meta, data }), opts)
 }
 
 fn to_hex(data: &[u8]) -> String {
@@ -1277,30 +1232,30 @@ fn main_jrsonnet(s: State) -> Result<String> {
     use jrsonnet_cli::ConfigureState;
     let opts = Opts::parse();
 
-    opts.general.configure(&s)?;
+    let (tla, _gc_guard) = opts.general.configure(&s)?;
     let mut cql = ObjValueBuilder::new();
     cql.member("chain".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_chain::INST)),
     )?;
     cql.member("dump".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_dump::INST)),
     )?;
     cql.member("toHex".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_to_hex::INST)),
     )?;
     cql.member("fromHex".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_from_hex::INST)),
     )?;
     cql.member("calc".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)),
     )?;
     cql.member("ss58".into()).hide().value(
-        s.clone(),
+        //s.clone(),
         Val::Func(FuncVal::StaticBuiltin(builtin_ss58::INST)),
     )?;
     s.context_initializer()
@@ -1324,7 +1279,7 @@ fn main_jrsonnet(s: State) -> Result<String> {
         path.push(opts.input.input);
         s.import(path)?
     };
-    let res = s.with_tla(res)?;
+    let res = apply_tla(s.clone(), &tla, res)?;
 
     Ok(if opts.string {
         let res = if let Some(str) = res.as_str() {
@@ -1334,7 +1289,7 @@ fn main_jrsonnet(s: State) -> Result<String> {
         };
         res
     } else {
-        let res = res.manifest(s, &ManifestFormat::Json { padding: 3 })?;
+        let res = res.manifest(&JsonFormat::cli(3))?;
         res.as_str().to_owned()
     })
 }
@@ -1347,7 +1302,7 @@ fn main_sync() {
             process::exit(0)
         }
         Err(e) => {
-            eprintln!("{}", s.stringify_err(&e));
+            eprintln!("{}", &e); // s.stringify_err()
             process::exit(1)
         }
     }

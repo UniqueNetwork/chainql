@@ -4,20 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "3.2.14", features = ["derive"] }
+clap = { version = "4.0", features = ["derive"] }
 frame-metadata = { path = "./frame-metadata/frame-metadata" }
 hex = "0.4.3"
-jrsonnet-evaluator = { git = "https://github.com/CertainLach/jrsonnet.git", features = [
+jrsonnet-evaluator = { git = "https://github.com/CertainLach/jrsonnet.git", version = "0.5.0-pre6", features = [
     "exp-destruct",
 ] }
-jrsonnet-stdlib = { git = "https://github.com/CertainLach/jrsonnet.git" }
-jrsonnet-cli = { git = "https://github.com/CertainLach/jrsonnet.git" }
+jrsonnet-stdlib = { git = "https://github.com/CertainLach/jrsonnet.git", version = "0.5.0-pre6" }
+jrsonnet-cli = { git = "https://github.com/CertainLach/jrsonnet.git", version = "0.5.0-pre6" }
 jrsonnet-gcmodule = "0.3.4"
 jsonrpsee = { version = "0.15.0", features = ["macros", "ws-client"] }
 parity-scale-codec = { version = "3.1.5", features = ["derive"] }
 scale-info = "2.1.2"
-serde = "1.0.140"
-serde_json = "1.0.82"
+serde = "1.0.147"
+serde_json = "1.0.87"
 sp-core = "6.0.0"
 tokio = { version = "1.20.1", features = ["rt-multi-thread"] }
 thiserror = "1.0.31"
