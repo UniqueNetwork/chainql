@@ -19,8 +19,8 @@ use jrsonnet_evaluator::{
     manifest::JsonFormat,
     tb,
     typed::Typed,
-    val::{ArrValue, StrValue},
-    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Unbound, Val,
+    val::{ArrValue, StrValue, ThunkValue},
+    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
@@ -52,6 +52,37 @@ struct Opts {
     string: bool,
 }
 
+macro_rules! simple_thunk {
+    (
+        $(
+            $(#[trace($meta:meta)])?
+            let $name:ident: $ty:ty = $expr:expr;
+        )*
+        Thunk::<$out:ty>::evaluated($val:expr)
+    ) => {{
+        #[derive(Trace)]
+        struct InvisThunk {
+            $(
+                $(#[trace($meta)])?
+                $name: $ty
+            ),*
+        }
+        impl ThunkValue for InvisThunk {
+            type Output = $out;
+
+            fn get(self: Box<Self>) -> Result<Self::Output> {
+                let Self {$($name),*} = *self;
+                Ok($val)
+            }
+        }
+
+        #[allow(clippy::redundant_field_names)]
+        Thunk::new(InvisThunk {
+            $($name: $expr,)*
+        })
+    }};
+}
+
 macro_rules! bail {
     ($($tt:tt)+) => {
         return Err(anyhow!($($tt)+))
@@ -79,24 +110,6 @@ fn codec_error(err: parity_scale_codec::Error) -> JrError {
 }
 fn client_error(err: client::Error) -> JrError {
     anyhow!("client: {}", err)
-}
-
-fn bound(val: Val) -> impl Unbound<Bound = Val> {
-    #[derive(Trace)]
-    struct Bound(Val);
-    impl Unbound for Bound {
-        type Bound = Val;
-
-        fn bind(
-            &self,
-            //_s: State,
-            _sup: Option<ObjValue>,
-            _this: Option<ObjValue>,
-        ) -> Result<Self::Bound> {
-            Ok(self.0.clone())
-        }
-    }
-    Bound(val)
 }
 
 fn decode_maybe_compact<I, T>(dec: &mut I, compact: bool) -> Result<T>
@@ -674,26 +687,25 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
             prefix: Rc::new(prefix),
             current_key_depth: c.current_key_depth + 1,
         };
-        let bound = bound(make_fetched_keys_storage(c)?);
-        out.member(value.clone()).bindable(bound)?;
+        out.member(value.clone())
+            .value(make_fetched_keys_storage(c)?)?;
     }
-    let preload_keys = bound({
-        eprintln!("preloading subset of keys by prefix: {0:0>2x?}", c.prefix);
-        let prefixes = c
-            .shared
-            .fetched
-            .iter()
-            .filter(|k| k.starts_with(&c.prefix))
-            .collect::<Vec<_>>();
-        c.shared
-            .client
-            .preload_storage(prefixes.as_slice())
-            .map_err(client_error)?;
-        Val::Obj(pending_out.clone().unwrap())
-    });
+    let shared: Rc<SharedMapFetcherContext> = c.shared;
+    let prefix: Rc<Vec<u8>> = c.prefix;
+    eprintln!("preloading subset of keys by prefix: {prefix:0>2x?}");
+    let prefixes = shared
+        .fetched
+        .iter()
+        .filter(|k| k.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    shared
+        .client
+        .preload_storage(prefixes.as_slice())
+        .map_err(client_error)?;
+    let preload_keys = Val::Obj(pending_out.unwrap());
     out.member("_preloadKeys".into())
         .hide()
-        .bindable(preload_keys)?;
+        .value(preload_keys)?;
     out.member("_key".into())
         .hide()
         .value(Val::Obj(keyout.build()))?;
@@ -776,13 +788,15 @@ fn make_pallet_key(
                             }
                         )))))?;
                     out.member(entry.name.clone().into())
-                        .thunk(Thunk::<Val>::evaluated(fetch_decode_key(
-                            entry_key.as_slice(),
-                            client.clone(),
-                            registry.clone(),
-                            v,
-                            default,
-                        )?))?;
+                        .thunk(simple_thunk! {
+                            let entry_key: Vec<u8> = entry_key;
+                            let client: Client = client.clone();
+                            #[trace(skip)]
+                            let v: UntrackedSymbol<TypeId> = v;
+                            let default: Option<Vec<u8>> = default;
+                            let registry: Rc<PortableRegistry> = registry.clone();
+                            Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, v, default)?)
+                        })?;
                 }
                 StorageEntryType::Map {
                     hashers,
@@ -834,15 +848,24 @@ fn make_pallet_key(
                         .member(entry.name.clone().into())
                         .value(Val::Num(keys.len() as f64))?;
 
-                    out.member(entry.name.clone().into())
-                        .thunk(Thunk::<Val>::evaluated(make_fetch_keys_storage(
-                            client.clone(),
+                    out.member(entry.name.clone().into()).thunk(simple_thunk! {
+                        let entry_key: Vec<u8> = entry_key;
+                        let client: Client = client.clone();
+                        #[trace(skip)]
+                        let value: UntrackedSymbol<TypeId> = value;
+                        let default: Option<Vec<u8>> = default;
+                        let registry: Rc<PortableRegistry> = registry.clone();
+                        #[trace(skip)]
+                        let keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)> = keys;
+                        Thunk::<Val>::evaluated(make_fetch_keys_storage(
+                            client,
                             entry_key,
-                            registry.clone(),
+                            registry,
                             keys,
                             value,
                             default,
-                        )?))?;
+                        )?)
+                    })?;
                 }
             }
         }
@@ -878,20 +901,18 @@ fn make_raw_key(client: Client) -> Result<ObjValue> {
     let fetched = client.get_keys(&[]).map_err(client_error)?;
     for key in fetched.iter().cloned() {
         let key_str = format!("0x{}", hex::encode(&key));
-        let value = bound(fetch_raw(key, client.clone())?);
-        out.member(key_str.into()).bindable(value)?;
+        out.member(key_str.into())
+            .value(fetch_raw(key, client.clone())?)?;
     }
     // TODO: key filter?
-    let preload_keys = bound({
-        eprintln!("preloading all storage keys");
-        client
-            .preload_storage(&fetched.iter().collect::<Vec<_>>())
-            .map_err(client_error)?;
-        Val::Obj(pending_out.clone().unwrap())
-    });
+    eprintln!("preloading all storage keys");
+    client
+        .preload_storage(&fetched.iter().collect::<Vec<_>>())
+        .map_err(client_error)?;
+    let preload_keys = Val::Obj(pending_out.clone().unwrap());
     out.member("_preloadKeys".into())
         .hide()
-        .bindable(preload_keys)?;
+        .value(preload_keys)?;
     let out = out.build();
     pending_out.fill(out.clone());
     Ok(out)
@@ -1024,18 +1045,21 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
             }
         }
         obj.member(pallet.name.clone().into())
-            .thunk(Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(
-                client.clone(),
-                pallet.clone(),
-                reg.clone(),
-                opts,
-            )?)))?;
+            .thunk(simple_thunk! {
+                let client: Client = client.clone();
+                #[trace(skip)]
+                let pallet: PalletMetadata<PortableForm> = pallet.clone();
+                let reg: Rc<PortableRegistry> = reg.clone();
+                let opts: ChainOpts = opts;
+                Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(client, pallet, reg, opts)?))
+            })?;
     }
     let meta = metadata_obj(&meta);
     obj.member("_meta".into()).hide().value(meta)?;
-    obj.member("_raw".into())
-        .hide()
-        .thunk(Thunk::<Val>::evaluated(Val::Obj(make_raw_key(client)?)))?;
+    obj.member("_raw".into()).hide().thunk(simple_thunk! {
+        let client: Client = client;
+        Thunk::<Val>::evaluated(Val::Obj(make_raw_key(client)?))
+    })?;
     obj.member("_encode".into())
         .hide()
         .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode {
@@ -1083,15 +1107,11 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
             opts,
         })))))?;
     obj.member("latest".into())
-        .thunk(Thunk::<Val>::evaluated(Val::Obj(make_block(
-            Client::new(
-                client
-                    .block(None)
-                    .map_err(client::Error::Live)
-                    .map_err(client_error)?,
-            ),
-            opts,
-        )?)))?;
+        .thunk(simple_thunk!{
+            let client: ClientShared = client;
+            let opts: ChainOpts = opts;
+            Thunk::<Val>::evaluated(Val::Obj(make_block(Client::new(client.block(None).map_err(client::Error::Live).map_err(client_error)?), opts)?))
+        })?;
     Ok(obj.build())
 }
 
