@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
-frame-metadata = { path = "./frame-metadata/frame-metadata" }
+frame-metadata = "15.0.0"
 hex = "0.4.3"
 jrsonnet-evaluator = { version = "0.5.0-pre6", features = [
     "exp-destruct",
