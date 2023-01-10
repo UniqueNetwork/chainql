@@ -687,25 +687,27 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
             prefix: Rc::new(prefix),
             current_key_depth: c.current_key_depth + 1,
         };
-        out.member(value.clone())
-            .value(make_fetched_keys_storage(c)?)?;
+        let bound = simple_thunk! {
+            #[trace(skip)]
+            let c: MapFetcherContext = c;
+            Thunk::<Val>::evaluated(make_fetched_keys_storage(c)?)
+        };
+        out.member(value.clone()).thunk(bound)?;
     }
-    let shared: Rc<SharedMapFetcherContext> = c.shared;
-    let prefix: Rc<Vec<u8>> = c.prefix;
-    eprintln!("preloading subset of keys by prefix: {prefix:0>2x?}");
-    let prefixes = shared
-        .fetched
-        .iter()
-        .filter(|k| k.starts_with(&prefix))
-        .collect::<Vec<_>>();
-    shared
-        .client
-        .preload_storage(prefixes.as_slice())
-        .map_err(client_error)?;
-    let preload_keys = Val::Obj(pending_out.unwrap());
+    let preload_keys = simple_thunk! {
+        let shared: Rc<SharedMapFetcherContext> = c.shared;
+        let prefix: Rc<Vec<u8>> = c.prefix;
+        let pending_out: Pending<ObjValue> = pending_out.clone();
+        Thunk::<Val>::evaluated({
+            eprintln!("preloading subset of keys by prefix: {prefix:0>2x?}");
+            let prefixes = shared.fetched.iter().filter(|k| k.starts_with(&prefix)).collect::<Vec<_>>();
+            shared.client.preload_storage(prefixes.as_slice()).map_err(client_error)?;
+            Val::Obj(pending_out.unwrap())
+        })
+    };
     out.member("_preloadKeys".into())
         .hide()
-        .value(preload_keys)?;
+        .thunk(preload_keys)?;
     out.member("_key".into())
         .hide()
         .value(Val::Obj(keyout.build()))?;
@@ -901,18 +903,27 @@ fn make_raw_key(client: Client) -> Result<ObjValue> {
     let fetched = client.get_keys(&[]).map_err(client_error)?;
     for key in fetched.iter().cloned() {
         let key_str = format!("0x{}", hex::encode(&key));
-        out.member(key_str.into())
-            .value(fetch_raw(key, client.clone())?)?;
+        let value = simple_thunk! {
+            let key: Vec<u8> = key;
+            let client: Client = client.clone();
+            Thunk::<Val>::evaluated(fetch_raw(key, client)?)
+        };
+        out.member(key_str.into()).thunk(value)?;
     }
     // TODO: key filter?
-    eprintln!("preloading all storage keys");
-    client
-        .preload_storage(&fetched.iter().collect::<Vec<_>>())
-        .map_err(client_error)?;
-    let preload_keys = Val::Obj(pending_out.clone().unwrap());
+    let preload_keys = simple_thunk! {
+        let pending_out: Pending<ObjValue> = pending_out.clone();
+        let client: Client = client;
+        let fetched: Vec<Vec<u8>> = fetched;
+        Thunk::<Val>::evaluated({
+            eprintln!("preloading all storage keys");
+            client.preload_storage(&fetched.iter().collect::<Vec<_>>()).map_err(client_error)?;
+            Val::Obj(pending_out.unwrap())
+        })
+    };
     out.member("_preloadKeys".into())
         .hide()
-        .value(preload_keys)?;
+        .thunk(preload_keys)?;
     let out = out.build();
     pending_out.fill(out.clone());
     Ok(out)
