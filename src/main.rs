@@ -1130,7 +1130,7 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
     let meta: RuntimeMetadataV14 = serde_json::from_value(
-        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad dump data".into())))?,
+        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad meta data".into())))?,
     )
     .unwrap();
     let mut data = BTreeMap::new();

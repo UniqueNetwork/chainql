@@ -1,3 +1,7 @@
+// Get Unique Network's non-fungible, refungible, and fungible token counts from a live chain specified by the `chainUrl` parameter.
+// 
+// Usage: chainql --tla-str=chainUrl=wss://eu-ws-quartz.unique.network:9944 uniqueTokenCount.jsonnet
+
 function(chainUrl)
 
 local quartz = cql.chain(chainUrl).latest;
