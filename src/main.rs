@@ -36,6 +36,7 @@ use tokio::runtime::Handle;
 
 mod client;
 
+/// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
     let ty = serde_json::to_value(meta).expect("valid value");
     Val::deserialize(ty).expect("valid value")
@@ -52,6 +53,7 @@ struct Opts {
     string: bool,
 }
 
+/// Create a lazily-evaluated thunk by wrapping the call inside.
 macro_rules! simple_thunk {
     (
         $(
@@ -83,11 +85,14 @@ macro_rules! simple_thunk {
     }};
 }
 
+/// Wrap an error generated from a formatted string in Err.
 macro_rules! bail {
     ($($tt:tt)+) => {
         return Err(anyhow!($($tt)+))
     }
 }
+
+/// Return an Err from a formatted string if the condition is not met.
 macro_rules! ensure {
     ($cond:expr, $($tt:tt)+) => {
         if !($cond) {
@@ -95,23 +100,30 @@ macro_rules! ensure {
         }
     };
 }
+
+/// Format a string and transform it into an error.
 macro_rules! anyhow {
     ($($tt:tt)+) => {
         JrError::from(jrsonnet_evaluator::error::ErrorKind::RuntimeError(format!($($tt)+).into()))
     };
 }
 
+/// Return a missing resolve error.
 fn missing_resolve() -> JrError {
     anyhow!("invalid metadata: missing resolve key")
 }
 
+/// Return a codec error.
 fn codec_error(err: parity_scale_codec::Error) -> JrError {
     anyhow!("codec: {}", err)
 }
+
+/// Return an error with the client.
 fn client_error(err: client::Error) -> JrError {
     anyhow!("client: {}", err)
 }
 
+/// Decode a value as it is or into compact.
 fn decode_maybe_compact<I, T>(dec: &mut I, compact: bool) -> Result<T>
 where
     I: Input,
@@ -124,6 +136,8 @@ where
         T::decode(dec).map_err(codec_error)
     }
 }
+
+/// Encode a value as it is or into compact, adding the output to [`dest`].
 fn encode_maybe_compact<T, O>(compact: bool, val: T, dest: &mut O)
 where
     T: Encode,
@@ -137,6 +151,7 @@ where
     }
 }
 
+/// Encode the contents of an object according to the supplied types [`typ`] into [`Val`], adding it to [`out`].
 fn encode_obj_value<O>(
     reg: &PortableRegistry,
     typ: &[Field<PortableForm>],
@@ -171,6 +186,7 @@ where
     Ok(())
 }
 
+/// Decode the contents of an object according to the supplied types [`typ`].
 fn decode_obj_value<I>(
     dec: &mut I,
     reg: &PortableRegistry,
@@ -197,6 +213,7 @@ where
     Ok(Val::Obj(out.build()))
 }
 
+/// Unpack a complex or wrapping type into the type it wraps.
 fn extract_newtypes(
     reg: &PortableRegistry,
     typ: UntrackedSymbol<TypeId>,
@@ -216,6 +233,8 @@ fn extract_newtypes(
         _ => Ok((compact, typ)),
     }
 }
+
+/// Parse a value generated from a string into JSON.
 fn maybe_json_parse(v: Val, from_string: bool) -> Result<Val> {
     if !from_string {
         return Ok(v);
@@ -228,6 +247,8 @@ fn maybe_json_parse(v: Val, from_string: bool) -> Result<Val> {
         Ok(v)
     }
 }
+
+/// Encode a value [`val`] according to the type [`typ`] registered in the [`reg`], adding it to [`out`].
 fn encode_value<O>(
     reg: &PortableRegistry,
     mut typ: UntrackedSymbol<TypeId>,
@@ -419,6 +440,8 @@ where
     }
     Ok(())
 }
+
+/// Decode some value [`dec`] into the type [`typ`] in the registry [`reg`].
 fn decode_value<I>(
     dec: &mut I,
     reg: &PortableRegistry,
@@ -583,6 +606,7 @@ where
     )
 }
 
+/// Fetch some value under a key in the storage and decode it according to the type [`typ`], or optionally use a default if the decoding fails.
 fn fetch_decode_key(
     key: &[u8],
     client: Client,
@@ -600,6 +624,7 @@ fn fetch_decode_key(
     })
 }
 
+/// Contains all the necessary data for correct loading of and decoding keys, uniformly accessed by entries' thunks.
 struct SharedMapFetcherContext {
     client: Client,
     reg: Rc<PortableRegistry>,
@@ -608,18 +633,23 @@ struct SharedMapFetcherContext {
     value_typ: UntrackedSymbol<TypeId>,
     value_default: Option<Vec<u8>>,
 }
+
+/// Contains smart pointers to shared data to be accessed by entries' thunks, together with the pointer to own latest key depth.
 #[derive(Clone)]
 struct MapFetcherContext {
     shared: Rc<SharedMapFetcherContext>,
     prefix: Rc<Vec<u8>>,
     current_key_depth: usize,
 }
+
 impl MapFetcherContext {
+    /// Get the latest key.
     fn key(&self) -> Option<&(StorageHasher, UntrackedSymbol<TypeId>)> {
         self.shared.keys.get(self.current_key_depth)
     }
 }
 
+/// Cache and objectify all keys from the fetched and return the resulting cache.
 fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
     let key = if let Some(k) = c.key() {
         k
@@ -715,6 +745,8 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
     pending_out.fill(out.clone());
     Ok(Val::Obj(out))
 }
+
+/// Fetch keys of some storage and cache them, returning the resulting cache value.
 fn make_fetch_keys_storage(
     client: Client,
     prefix: Vec<u8>,
@@ -738,6 +770,7 @@ fn make_fetch_keys_storage(
     })
 }
 
+/// Create a Jsonnet object out of given pallets' storage and assign appropriate methods.
 fn make_pallet_key(
     client: Client,
     data: PalletMetadata<PortableForm>,
@@ -887,6 +920,7 @@ fn make_pallet_key(
     Ok(out.build())
 }
 
+/// Get some value under a key in client's storage as a byte array value.
 fn fetch_raw(key: Vec<u8>, client: Client) -> Result<Val> {
     let value = client.get_storage(key.as_slice()).map_err(client_error)?;
     Ok(if let Some(value) = value {
@@ -897,6 +931,7 @@ fn fetch_raw(key: Vec<u8>, client: Client) -> Result<Val> {
     })
 }
 
+/// Objectify some chain's storage of all keys in their byte array form.
 fn make_raw_key(client: Client) -> Result<ObjValue> {
     let mut out = ObjValueBuilder::new();
     let pending_out = Pending::<ObjValue>::new();
@@ -929,8 +964,13 @@ fn make_raw_key(client: Client) -> Result<ObjValue> {
     Ok(out)
 }
 
+/// Possibly multi-type key, pointing to a single storage entry.
 #[derive(Trace, Clone)]
 struct Key(#[trace(skip)] Vec<(StorageHasher, UntrackedSymbol<TypeId>)>);
+
+/// Encode the value [`v`] into some type, denoted in the calling object's inner registry by the number [`typ`].
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
     prefix: Rc<Vec<u8>>,
@@ -996,8 +1036,13 @@ fn builtin_encode_key(
     Ok(to_hex(&out))
 }
 
+/// Traceable wrapper of an [`UntrackedSymbol`].
 #[derive(Trace, Clone)]
 struct ValueId(#[trace(skip)] UntrackedSymbol<TypeId>);
+
+/// Encode the value [`v`] into some type according to the object's supplied type [`ty`].
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
     ty: ValueId,
@@ -1009,6 +1054,10 @@ fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<Strin
     encode_value(&reg, this.ty.0, false, value, &mut out, false)?;
     Ok(to_hex(&out))
 }
+
+/// Encode the value [`v`] into some type, denoted in the calling object's inner registry by the number [`typ`].
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
@@ -1020,6 +1069,10 @@ fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<String> {
 
     Ok(to_hex(&out))
 }
+
+/// Decode the value [`v`] according to [`typ`], the type number of the calling object's inner registry.
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
@@ -1031,6 +1084,16 @@ fn builtin_decode(this: &builtin_decode, typ: u32, v: IStr) -> Result<Val> {
     decode_value(&mut v.as_slice(), &this.reg, sym, false).map(Val::from)
 }
 
+/// Convert an address from SS58 to a hex string.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// # Example
+///
+/// ```
+/// cql.ss58("5F6kd9bskZE53HP4JZqadDvEzvrCi4179F6ma3ZV4G3U3x7Y") ==
+///     "0x864481616c4bd8689a578cb28e1da470f7b819d6b6df8f4d65b50aba8f996508"
+/// ```
 #[builtin]
 fn builtin_ss58(v: IStr) -> Result<IStr> {
     let s = sp_core::crypto::AccountId32::from_string(&v)
@@ -1038,6 +1101,7 @@ fn builtin_ss58(v: IStr) -> Result<IStr> {
     Ok(to_hex(s.as_ref()).into())
 }
 
+/// Create a Jsonnet object of a blockchain block.
 fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
     let mut obj = ObjValueBuilder::new();
     let meta = client.get_metadata().map_err(client_error)?;
@@ -1084,6 +1148,9 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
     Ok(obj.build())
 }
 
+/// Create a Jsonnet object of a blockchain block.
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
 #[builtin(fields(
     client: ClientShared,
     opts: ChainOpts,
@@ -1100,11 +1167,22 @@ fn chain_block(this: &chain_block, block: u32) -> Result<ObjValue> {
     )
 }
 
+/// Selection of optional flags for chain data processing.
 #[derive(Typed, Trace, Default, Clone, Copy)]
 struct ChainOpts {
+    /// Whether or not to ignore empty fields.
     omit_empty: bool,
 }
 
+/// Get chain data from a URL, including queryable storage, metadata, and blocks.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// # Example
+///
+/// ```
+/// cql.chain("ws://localhost:9944")
+/// ```
 #[builtin]
 fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
@@ -1126,11 +1204,24 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
     Ok(obj.build())
 }
 
+/// Create a mock block Jsonnet object from some parsed data dump.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// # Example
+///
+/// ```
+/// cql.dump(cql.chain("ws://localhost:9944").latest._meta, {
+///     "a": 1,
+///     "b": 2,
+///     "c": 3,
+/// }, {omit_empty:true})
+/// ```
 #[builtin]
 fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
     let meta: RuntimeMetadataV14 = serde_json::from_value(
-        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad meta data".into())))?,
+        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad metadata".into())))?,
     )
     .unwrap();
     let mut data = BTreeMap::new();
@@ -1146,6 +1237,7 @@ fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<Ob
     make_block(Client::new(ClientDump { meta, data }), opts)
 }
 
+/// Convert an array of bytes to a hex string.
 fn to_hex(data: &[u8]) -> String {
     let mut out = vec![0; data.len() * 2 + 2];
     out[0] = b'0';
@@ -1154,10 +1246,21 @@ fn to_hex(data: &[u8]) -> String {
     String::from_utf8(out).expect("hex is utf-8 compatible")
 }
 
+/// Convert an array of bytes to a hex string.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// # Example
+///
+/// ```
+/// cql.toHex([0, 0, 0, 2, 16, 62, 200, 1]) == "0x00000002103ec801"
+/// ```
 #[builtin]
 fn builtin_to_hex(data: Vec<u8>) -> Result<String> {
     Ok(to_hex(&data))
 }
+
+/// Convert a hex string to a vector of bytes.
 fn from_hex(data: &str) -> Result<Vec<u8>> {
     ensure!(data.starts_with("0x"), "string doesn't starts with 0x");
     let out =
@@ -1165,11 +1268,30 @@ fn from_hex(data: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Convert a hex string to a vector of bytes.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// # Example
+///
+/// ```
+/// cql.fromHex("0x00000002103ec801") == [0, 0, 0, 2, 16, 62, 200, 1]
+/// ```
 #[builtin]
 fn builtin_from_hex(data: IStr) -> Result<Vec<u8>> {
     from_hex(&data)
 }
 
+/// Perform a calculation on the vector of tokens using the postfix notation.
+///
+/// This function is passed to Jsonnet and is callable from the code.
+///
+/// Example
+///
+/// ```
+/// local someNumber = "10";
+/// cql.calc([someNumber, "2", "6", "**", "*"]) == "640"
+/// ```
 #[builtin]
 fn builtin_calc(ops: Vec<IStr>) -> Result<String> {
     use num_traits::Num;
@@ -1210,11 +1332,14 @@ fn builtin_calc(ops: Vec<IStr>) -> Result<String> {
     Ok(stack[0].to_string())
 }
 
+/// Set up Jrsonnet.
 fn main_jrsonnet(s: State) -> Result<String> {
     use jrsonnet_cli::ConfigureState;
     let opts = Opts::parse();
 
     let (tla, _gc_guard) = opts.general.configure(&s)?;
+
+    // Pass the built-in functions as macro-generated structs into the cql object available from Jsonnet code.
     let mut cql = ObjValueBuilder::new();
     cql.member("chain".into())
         .hide()
@@ -1242,6 +1367,7 @@ fn main_jrsonnet(s: State) -> Result<String> {
         .globals
         .insert("cql".into(), Thunk::evaluated(Val::Obj(cql.build())));
 
+    // Resolve the Jsonnet code supplied to chainql.
     let res = if opts.input.exec {
         s.evaluate_snippet("<exec>".to_owned(), opts.input.input)?
     } else if opts.input.input == "-" {
@@ -1255,8 +1381,10 @@ fn main_jrsonnet(s: State) -> Result<String> {
         path.push(opts.input.input);
         s.import(path)?
     };
+    // Supply the Jsonnet code with top level arguments.
     let res = apply_tla(s.clone(), &tla, res)?;
 
+    // Output the result as either string or JSON.
     Ok(if opts.string {
         let res = if let Some(str) = res.as_str() {
             str.as_str().to_owned()

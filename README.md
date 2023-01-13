@@ -3,7 +3,7 @@
 Query Substrate blockchains using Jsonnet.
 
 ChainQL is a utility for representing chain data in a JSON format and using Jsonnet to process and manipulate the output.
-It is supposed to be a faster alternative to querying the chain data with PolkadotJS.
+It is supposed to be a more convenient alternative to querying the chain data with PolkadotJS.
 
 ## Install
 
@@ -34,8 +34,8 @@ To supply a jsonnet function with arguments, use options from the **top level ar
 
 Inside the code, you can call `cql.${method name from the ones defined below}` for any built-in utility method defined in the ChainQL Rust code itself. These currently are:
 ```Rust
-cql.chain(/* chain url */)
-cql.dump(/* chain metadata, dump data, optional parameters */)
+cql.chain(/* chain url to get the data from */)
+cql.dump(/* chain metadata, dump data, optional parameters, to create a jsonnet representation of a mock chain storage */)
 cql.toHex(/* array of bytes to convert to hex string */)
 cql.fromHex(/* string to convert to an array of bytes */)
 cql.calc(/* array of tokens to evaluate in postfix notation */)
