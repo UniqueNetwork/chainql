@@ -2,7 +2,7 @@
 //
 // Only -concat hashed keys are dumped
 //
-// Usage: chainql --tla-str=chainUrl=ws://my-chain:9944 > dump.json
+// Usage: chainql --tla-str=chainUrl=ws://my-chain:9944 readableDump.jsonnet > dump.json
 
 function(chainUrl)
 
