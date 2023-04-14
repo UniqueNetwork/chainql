@@ -1,37 +1,47 @@
 // Get Unique Network's non-fungible, refungible, and fungible token counts from a live chain specified by the `chainUrl` parameter.
 // 
-// Usage: chainql --tla-str=chainUrl=wss://eu-ws-quartz.unique.network:9944 uniqueTokenCount.jsonnet
+// ### Args
+// - `chainUrl`: the URL of the chain to pull data from.
+//
+// ### Usage
+// `chainql --tla-str=chainUrl=wss://eu-ws-quartz.unique.network:9944 uniqueTokenCount.jsonnet`
 
 function(chainUrl)
 
-local quartz = cql.chain(chainUrl).latest;
+local chain = cql.chain(chainUrl).latest;
 
 local
-	collections = quartz.Common.CollectionById._preloadKeys,
+	// Load and cache all the keys pointing to the collections in the chain's storage
+	collections = chain.Common.CollectionById._preloadKeys,
+	// Filter collections corresponding to a specific type (NFT, Fungible, ReFungible)
 	collectionsByType(type) = std.filter(function(c) c.mode == type || std.isObject(c.mode) && std.objectHas(c.mode, type), std.objectValues(collections)),
 ;
 
 local data = {
 	nft: {
-		minted: std.foldr(function(a, b) a + b, std.objectValues(quartz.Nonfungible.TokensMinted._preloadKeys), 0),
-		burnt: std.foldr(function(a, b) a + b, std.objectValues(quartz.Nonfungible.TokensBurnt._preloadKeys), 0),
+		// Iterate over and count the tokens minted and burnt
+		minted: std.foldr(function(a, b) a + b, std.objectValues(chain.Nonfungible.TokensMinted._preloadKeys), 0),
+		burnt: std.foldr(function(a, b) a + b, std.objectValues(chain.Nonfungible.TokensBurnt._preloadKeys), 0),
 		alive: self.minted - self.burnt,
 		_collections:: collectionsByType('NFT'),
 		collectionCount: std.length(self._collections),
 	},
 	refungible: {
-		minted: std.foldr(function(a, b) a + b, std.objectValues(quartz.Refungible.TokensMinted._preloadKeys), 0),
-		burnt: std.foldr(function(a, b) a + b, std.objectValues(quartz.Refungible.TokensBurnt._preloadKeys), 0),
+		// Iterate over and count the tokens minted and burnt
+		minted: std.foldr(function(a, b) a + b, std.objectValues(chain.Refungible.TokensMinted._preloadKeys), 0),
+		burnt: std.foldr(function(a, b) a + b, std.objectValues(chain.Refungible.TokensBurnt._preloadKeys), 0),
 		alive: self.minted - self.burnt,
 		_collections:: collectionsByType('ReFungible'),
 		collectionCount: std.length(self._collections),
 	},
 	fungible: {
+		// Count the variety of different Fungible tokens created on the chain (represented as collections)
 		_collections:: collectionsByType('Fungible'),
 		collectionCount: std.length(self._collections),
 	},
 };
 
+// Return a formatted string with the resulting data
 std.join('\n', [
 	'# HELP tokens_total The total number of existing tokens',
 	'# TYPE tokens_total counter',
