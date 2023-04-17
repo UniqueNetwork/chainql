@@ -781,7 +781,7 @@ fn make_pallet_key(
     let mut keyout = ObjValueBuilder::new();
     let mut encode_keyout = ObjValueBuilder::new();
     let mut encode_valueout = ObjValueBuilder::new();
-    let mut decode_out = ObjValueBuilder::new();
+    let mut decode_valueout = ObjValueBuilder::new();
     let mut key_args = ObjValueBuilder::new();
     if let Some(storage) = data.storage {
         let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
@@ -823,7 +823,7 @@ fn make_pallet_key(
                                 ty: ValueId(v),
                             }
                         )))))?;
-                    decode_out
+                    decode_valueout
                         .member(entry.name.clone().into())
                         .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
                             builtin_decode_value {
@@ -888,7 +888,7 @@ fn make_pallet_key(
                                 ty: ValueId(value),
                             }
                         )))))?;
-                    decode_out
+                    decode_valueout
                         .member(entry.name.clone().into())
                         .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
                             builtin_decode_value {
@@ -931,9 +931,9 @@ fn make_pallet_key(
     out.member("_encodeValue".into())
         .hide()
         .value(Val::Obj(encode_valueout.build()))?;
-    out.member("_decode".into())
+    out.member("_decodeValue".into())
         .hide()
-        .value(Val::Obj(decode_out.build()))?;
+        .value(Val::Obj(decode_valueout.build()))?;
     out.member("_keyArgs".into())
         .hide()
         .value(Val::Obj(key_args.build()))?;
