@@ -4,6 +4,7 @@ use std::{
     io::Read,
     process,
     rc::Rc,
+    str::FromStr,
 };
 
 use clap::Parser;
@@ -11,7 +12,7 @@ use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
 use frame_metadata::{
     PalletMetadata, RuntimeMetadataV14, StorageEntryModifier, StorageEntryType, StorageHasher,
 };
-use jrsonnet_cli::{GeneralOpts, InputOpts};
+use jrsonnet_cli::{InputOpts, StdOpts, TlaOpts, TraceOpts, MiscOpts};
 use jrsonnet_evaluator::{
     apply_tla,
     error::{Error as JrError, ErrorKind::RuntimeError, Result},
@@ -20,11 +21,10 @@ use jrsonnet_evaluator::{
     tb,
     typed::Typed,
     val::{ArrValue, StrValue, ThunkValue},
-    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val,
+    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val, throw,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
-use num_traits::{FromPrimitive, One, Zero};
 use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
 use scale_info::{
     form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
@@ -46,9 +46,15 @@ fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
 #[derive(Parser)]
 struct Opts {
     #[clap(flatten)]
-    general: GeneralOpts,
-    #[clap(flatten)]
     input: InputOpts,
+    #[clap(flatten)]
+    std: StdOpts,
+    #[clap(flatten)]
+    tla: TlaOpts,
+    #[clap(flatten)]
+    trace: TraceOpts,
+    #[clap(flatten)]
+    misc: MiscOpts,
     #[clap(long, short = 'S')]
     string: bool,
 }
@@ -163,13 +169,13 @@ where
     O: Output,
 {
     if typ.len() == 1 {
-        return encode_value(reg, *typ[0].ty(), compact, val, out, false);
+        return encode_value(reg, typ[0].ty, compact, val, out, false);
     }
     let val = ObjValue::from_untyped(val)?;
     for (i, f) in typ.iter().enumerate() {
         let field_name: IStr = f
-            .name()
-            .cloned()
+            .name
+            .clone()
             .unwrap_or_else(|| format!("unnamed{}", i))
             .into();
         State::push_description(
@@ -178,7 +184,7 @@ where
                 let field = val
                     .get(field_name.clone())?
                     .ok_or_else(|| anyhow!("missing field {field_name}"))?;
-                encode_value(reg, *f.ty(), compact, field, out, false)?;
+                encode_value(reg, f.ty, compact, field, out, false)?;
                 Ok(())
             },
         )?;
@@ -197,14 +203,14 @@ where
     I: Input,
 {
     if typ.len() == 1 {
-        return decode_value(dec, reg, *typ[0].ty(), compact);
+        return decode_value(dec, reg, typ[0].ty, compact);
     }
     let mut out = ObjValueBuilder::new();
     for (i, f) in typ.iter().enumerate() {
-        let field = decode_value(dec, reg, *f.ty(), compact)?;
+        let field = decode_value(dec, reg, f.ty, compact)?;
         out.member(
-            f.name()
-                .cloned()
+            f.name
+                .clone()
                 .unwrap_or_else(|| format!("unnamed{}", i))
                 .into(),
         )
@@ -219,17 +225,17 @@ fn extract_newtypes(
     typ: UntrackedSymbol<TypeId>,
     compact: bool,
 ) -> Result<(bool, UntrackedSymbol<TypeId>)> {
-    match reg
-        .resolve(typ.id())
+    match &reg
+        .resolve(typ.id)
         .ok_or_else(missing_resolve)?
-        .type_def()
+        .type_def
     {
-        TypeDef::Composite(c) if c.fields().len() == 1 => {
-            extract_newtypes(reg, *c.fields()[0].ty(), compact)
+        TypeDef::Composite(c) if c.fields.len() == 1 => {
+            extract_newtypes(reg, c.fields[0].ty, compact)
         }
-        TypeDef::Array(a) if a.len() == 1 => extract_newtypes(reg, *a.type_param(), compact),
-        TypeDef::Tuple(d) if d.fields().len() == 1 => extract_newtypes(reg, d.fields()[0], compact),
-        TypeDef::Compact(c) => extract_newtypes(reg, *c.type_param(), true),
+        TypeDef::Array(a) if a.len == 1 => extract_newtypes(reg, a.type_param, compact),
+        TypeDef::Tuple(d) if d.fields.len() == 1 => extract_newtypes(reg, d.fields[0], compact),
+        TypeDef::Compact(c) => extract_newtypes(reg, c.type_param, true),
         _ => Ok((compact, typ)),
     }
 }
@@ -248,6 +254,18 @@ fn maybe_json_parse(v: Val, from_string: bool) -> Result<Val> {
     }
 }
 
+fn bigint_encode<T: FromStr>(v: Val) -> Result<T> where T::Err: std::fmt::Display {
+    let v = match v {
+        Val::BigInt(n) => (&*n).clone(),
+        _ => throw!("unexpected type: {}", v.value_type())
+    };
+    Ok(v.to_string().parse().map_err(|e| RuntimeError(format!("bigint encode: {e}").into()))?)
+}
+fn bigint_decode<T: std::fmt::Display>(v: T) -> Result<Val> {
+    let v = v.to_string();
+    let v: BigInt = v.parse().map_err(|e| RuntimeError(format!("bigint decode: {e}").into()))?;
+    Ok(Val::BigInt(Box::new(v)))
+}
 /// Encode a value [`val`] according to the type [`typ`] registered in the [`reg`], adding it to [`out`].
 fn encode_value<O>(
     reg: &PortableRegistry,
@@ -263,46 +281,46 @@ where
     let (new_compact, new_typ) = extract_newtypes(reg, typ, compact)?;
     compact = new_compact;
     typ = new_typ;
-    match reg
-        .resolve(typ.id())
+    match &reg
+        .resolve(typ.id)
         .ok_or_else(missing_resolve)?
-        .type_def()
+        .type_def
     {
         TypeDef::Composite(comp) => {
             let val = maybe_json_parse(val, from_string)?;
-            encode_obj_value(reg, comp.fields(), compact, val, out)?;
+            encode_obj_value(reg, &comp.fields, compact, val, out)?;
         }
         TypeDef::Variant(e) => {
             if let Some(str) = val.as_str() {
-                for variant in e.variants() {
-                    if variant.name().as_str() == str.as_str() && variant.fields().is_empty() {
-                        variant.index().encode_to(out);
+                for variant in e.variants.iter() {
+                    if variant.name.as_str() == str.as_str() && variant.fields.is_empty() {
+                        variant.index.encode_to(out);
                         return Ok(());
                     }
                 }
             }
             let val = maybe_json_parse(val, from_string)?;
             let v = ObjValue::from_untyped(val)?;
-            let name = v.fields();
+            let name = &v.fields();
             ensure!(name.len() == 1, "not a enum");
             let name = name[0].clone();
             let value = v
                 .get(name.clone())?
                 .expect("value exists, as name is obtained from .fields()");
 
-            for variant in e.variants() {
-                if variant.name().as_str() == name.as_str() {
-                    variant.index().encode_to(out);
-                    return encode_obj_value(reg, variant.fields(), compact, value, out);
+            for variant in e.variants.iter() {
+                if variant.name.as_str() == name.as_str() {
+                    variant.index.encode_to(out);
+                    return encode_obj_value(reg, &variant.fields, compact, value, out);
                 }
             }
             bail!("variant not found: {name}");
         }
         TypeDef::Sequence(e) => {
             if matches!(
-                reg.resolve(e.type_param().id())
+                reg.resolve(e.type_param.id)
                     .ok_or_else(missing_resolve)?
-                    .type_def(),
+                    .type_def,
                 TypeDef::Primitive(TypeDefPrimitive::U8)
             ) {
                 let v = String::from_untyped(val)?;
@@ -314,22 +332,22 @@ where
             let v = Vec::<Val>::from_untyped(val)?;
             Compact(v.len() as u32).encode_to(out);
             for val in v.iter() {
-                encode_value(reg, *e.type_param(), compact, val.clone(), out, false)?;
+                encode_value(reg, e.type_param, compact, val.clone(), out, false)?;
             }
         }
         TypeDef::Array(e) => {
             if matches!(
-                reg.resolve(e.type_param().id())
+                reg.resolve(e.type_param.id)
                     .ok_or_else(missing_resolve)?
-                    .type_def(),
+                    .type_def,
                 TypeDef::Primitive(TypeDefPrimitive::U8)
             ) {
                 let v = String::from_untyped(val)?;
                 let raw = from_hex(&v)?;
                 ensure!(
-                    e.len() as usize == raw.len(),
+                    e.len as usize == raw.len(),
                     "array has wrong number for elements, expected {}, got {}",
-                    e.len(),
+                    e.len,
                     raw.len()
                 );
                 for i in raw {
@@ -340,23 +358,23 @@ where
             let val = maybe_json_parse(val, from_string)?;
             let v = Vec::<Val>::from_untyped(val)?;
             ensure!(
-                e.len() as usize == v.len(),
+                e.len as usize == v.len(),
                 "array has wrong number of elements, expected {}, got {}",
-                e.len(),
+                e.len,
                 v.len(),
             );
             for val in v.iter() {
-                encode_value(reg, *e.type_param(), compact, val.clone(), out, false)?;
+                encode_value(reg, e.type_param, compact, val.clone(), out, false)?;
             }
         }
         TypeDef::Tuple(e) => {
             let val = maybe_json_parse(val, from_string)?;
             let v = Vec::<Val>::from_untyped(val)?;
             ensure!(
-                e.fields().len() == v.len(),
+                e.fields.len() == v.len(),
                 "tuple has wrong number of elements"
             );
-            for (ty, val) in e.fields().iter().zip(v.iter()) {
+            for (ty, val) in e.fields.iter().zip(v.iter()) {
                 encode_value(reg, *ty, compact, val.clone(), out, false)?;
             }
         }
@@ -387,19 +405,16 @@ where
                 encode_maybe_compact::<u32, _>(compact, v, out)
             }
             TypeDefPrimitive::U64 => {
-                let vs = String::from_untyped(val)?;
-                let v: u64 = vs.parse().map_err(|e| anyhow!("{e}"))?;
+                let v = bigint_encode(val)?;
                 encode_maybe_compact::<u64, _>(compact, v, out)
             }
             TypeDefPrimitive::U128 => {
-                let vs = String::from_untyped(val)?;
-                let v: u128 = vs.parse().map_err(|e| anyhow!("{e}"))?;
+                let v = bigint_encode(val)?;
                 encode_maybe_compact::<u128, _>(compact, v, out)
             }
             TypeDefPrimitive::U256 => {
                 ensure!(!compact, "U256 can't be compact");
-                let vs = String::from_untyped(val)?;
-                let v: U256 = vs.parse().map_err(|e| anyhow!("{e}"))?;
+                let v: U256 = bigint_encode(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I8 => {
@@ -421,14 +436,12 @@ where
             }
             TypeDefPrimitive::I64 => {
                 ensure!(!compact, "int can't be compact");
-                let vs = String::from_untyped(val)?;
-                let v: i64 = vs.parse().map_err(|e| anyhow!("{e}"))?;
+                let v: i64 = bigint_encode(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I128 => {
                 ensure!(!compact, "int can't be compact");
-                let vs = String::from_untyped(val)?;
-                let v: i128 = vs.parse().map_err(|e| anyhow!("{e}"))?;
+                let v: i128 = bigint_encode(val)?;
                 v.encode_to(out)
             }
             TypeDefPrimitive::I256 => {
@@ -455,22 +468,22 @@ where
     compact = new_compact;
     typ = new_typ;
     Ok(
-        match reg
-            .resolve(typ.id())
+        match &reg
+            .resolve(typ.id)
             .ok_or_else(missing_resolve)?
-            .type_def()
+            .type_def
         {
-            TypeDef::Composite(c) => decode_obj_value(dec, reg, c.fields(), compact)?,
+            TypeDef::Composite(c) => decode_obj_value(dec, reg, &c.fields, compact)?,
             TypeDef::Variant(e) => {
                 let idx = u8::decode(dec).map_err(codec_error)?;
-                for var in e.variants() {
-                    if var.index() == idx {
-                        if var.fields().is_empty() {
-                            return Ok(Val::Str(StrValue::Flat(var.name().as_str().into())));
+                for var in e.variants.iter() {
+                    if var.index == idx {
+                        if var.fields.is_empty() {
+                            return Ok(Val::Str(StrValue::Flat(var.name.as_str().into())));
                         }
                         let mut obj = ObjValueBuilder::new();
-                        let val = decode_obj_value(dec, reg, var.fields(), compact)?;
-                        obj.member(var.name().as_str().into()).value(val)?;
+                        let val = decode_obj_value(dec, reg, &var.fields, compact)?;
+                        obj.member(var.name.as_str().into()).value(val)?;
 
                         return Ok(Val::Obj(obj.build()));
                     }
@@ -479,9 +492,9 @@ where
             }
             TypeDef::Sequence(seq) => {
                 if matches!(
-                    reg.resolve(seq.type_param().id())
+                    reg.resolve(seq.type_param.id)
                         .ok_or_else(missing_resolve)?
-                        .type_def(),
+                        .type_def,
                     TypeDef::Primitive(TypeDefPrimitive::U8)
                 ) {
                     let raw = <Vec<u8>>::decode(dec).map_err(codec_error)?;
@@ -497,19 +510,19 @@ where
                 let mut out = vec![];
                 let size = <Compact<u32>>::decode(dec).map_err(codec_error)?;
                 for _ in 0..size.0 {
-                    let val = decode_value(dec, reg, *seq.type_param(), compact)?;
+                    let val = decode_value(dec, reg, seq.type_param, compact)?;
                     out.push(val);
                 }
                 Val::Arr(ArrValue::eager(out))
             }
             TypeDef::Array(arr) => {
                 if matches!(
-                    reg.resolve(arr.type_param().id())
+                    reg.resolve(arr.type_param.id)
                         .expect("type exist")
-                        .type_def(),
+                        .type_def,
                     TypeDef::Primitive(TypeDefPrimitive::U8)
                 ) {
-                    let mut raw = vec![0; arr.len() as usize];
+                    let mut raw = vec![0; arr.len as usize];
                     for v in raw.iter_mut() {
                         *v = u8::decode(dec).expect("byte");
                     }
@@ -523,15 +536,15 @@ where
                 }
 
                 let mut out = vec![];
-                for _ in 0..arr.len() {
-                    let val = decode_value(dec, reg, *arr.type_param(), compact)?;
+                for _ in 0..arr.len {
+                    let val = decode_value(dec, reg, arr.type_param, compact)?;
                     out.push(val);
                 }
                 Val::Arr(ArrValue::eager(out))
             }
             TypeDef::Tuple(t) => {
                 let mut out = vec![];
-                for t in t.fields() {
+                for t in t.fields.iter() {
                     let val = decode_value(dec, reg, *t, compact)?;
                     out.push(val);
                 }
@@ -565,12 +578,12 @@ where
                 }
                 TypeDefPrimitive::U128 => {
                     let val = decode_maybe_compact::<_, u128>(dec, compact)?;
-                    Val::Str(StrValue::Flat(val.to_string().into()))
+                    bigint_decode(val)?
                 }
                 TypeDefPrimitive::U256 => {
                     ensure!(!compact, "u256 can't be compact");
                     let val = U256::decode(dec).map_err(codec_error)?;
-                    Val::Str(StrValue::Flat(val.to_string().into()))
+                    bigint_decode(val)?
                 }
                 TypeDefPrimitive::I8 => {
                     let val = i8::decode(dec).map_err(codec_error)?;
@@ -589,18 +602,18 @@ where
                 TypeDefPrimitive::I64 => {
                     ensure!(!compact, "int can't be compact");
                     let val = i64::decode(dec).map_err(codec_error)?;
-                    Val::Str(StrValue::Flat(val.to_string().into()))
+                    bigint_decode(val)?
                 }
                 TypeDefPrimitive::I128 => {
                     ensure!(!compact, "int can't be compact");
                     let val = i128::decode(dec).map_err(codec_error)?;
-                    Val::Str(StrValue::Flat(val.to_string().into()))
+                    bigint_decode(val)?
                 }
                 TypeDefPrimitive::I256 => {
                     bail!("i256 not supported");
                 }
             },
-            TypeDef::Compact(c) => decode_value(dec, reg, *c.type_param(), true)?,
+            TypeDef::Compact(c) => decode_value(dec, reg, c.type_param, true)?,
             TypeDef::BitSequence(_) => bail!("bitseq not supported"),
         },
     )
@@ -847,11 +860,11 @@ fn make_pallet_key(
                     key,
                     value,
                 } => {
-                    let tuple = registry.resolve(key.id()).expect("key tuple");
-                    let fields: Vec<_> = match tuple.type_def() {
-                        TypeDef::Composite(t) => t.fields().iter().map(|f| f.ty()).collect(),
-                        TypeDef::Tuple(t) if hashers.len() != 1 => t.fields().iter().collect(),
-                        _ => [&key].into_iter().collect(),
+                    let tuple = registry.resolve(key.id).expect("key tuple");
+                    let fields: Vec<_> = match &tuple.type_def {
+                        TypeDef::Composite(t) => t.fields.iter().map(|f| f.ty).collect(),
+                        TypeDef::Tuple(t) if hashers.len() != 1 => t.fields.iter().cloned().collect(),
+                        _ => [key].into_iter().collect(),
                     };
 
                     let keys = if hashers.len() == 1 {
@@ -861,14 +874,14 @@ fn make_pallet_key(
                             hashers.len() == fields.len(),
                             "bad tuple: {:?} {:?} {}-{}",
                             hashers,
-                            tuple.type_def(),
+                            tuple.type_def,
                             storage.prefix,
                             entry.name,
                         );
 
                         hashers
                             .into_iter()
-                            .zip(fields.iter().map(|s| **s))
+                            .zip(fields.iter().map(|s| *s))
                             .collect::<Vec<(_, _)>>()
                     };
                     encode_keyout
@@ -1315,62 +1328,14 @@ fn builtin_from_hex(data: IStr) -> Result<Vec<u8>> {
     from_hex(&data)
 }
 
-/// Perform a calculation on the vector of tokens using the postfix notation.
-///
-/// This function is passed to Jsonnet and is callable from the code.
-///
-/// Example
-///
-/// ```
-/// local someNumber = "10";
-/// cql.calc([someNumber, "2", "6", "**", "*"]) == "640"
-/// ```
-#[builtin]
-fn builtin_calc(ops: Vec<IStr>) -> Result<String> {
-    use num_traits::Num;
-    let mut stack = <Vec<BigInt>>::new();
-    for op in ops {
-        match op.as_str() {
-            op @ ("-" | "+" | "*" | "**") => {
-                let b = stack.pop().ok_or_else(|| anyhow!("missing rhs operand"))?;
-                let a = stack.pop().ok_or_else(|| anyhow!("missing lhs operand"))?;
-                let r = match op {
-                    "-" => a - b,
-                    "+" => a + b,
-                    "*" => a * b,
-                    "**" => {
-                        let mut o = BigInt::from_u32(1).expect("0 is a valid bigint");
-                        let mut c = b.clone();
-                        while c != BigInt::zero() {
-                            o *= a.clone();
-                            c -= BigInt::one();
-                        }
-                        o
-                    }
-                    _ => unreachable!(),
-                };
-                stack.push(r);
-            }
-            v => {
-                let n = BigInt::from_str_radix(v, 10)
-                    .map_err(|e| anyhow!("failed to parse number: {e}"))?;
-                stack.push(n);
-            }
-        }
-    }
-    ensure!(
-        stack.len() == 1,
-        "there should be exactly one stack element in the end"
-    );
-    Ok(stack[0].to_string())
-}
-
 /// Set up Jrsonnet.
-fn main_jrsonnet(s: State) -> Result<String> {
-    use jrsonnet_cli::ConfigureState;
-    let opts = Opts::parse();
+fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
+    let import_resolver = opts.misc.import_resolver();
+    s.set_import_resolver(import_resolver);
+    if let Some(std) = opts.std.context_initializer(&s)? {
+    s.set_context_initializer(std);
+    }
 
-    let (tla, _gc_guard) = opts.general.configure(&s)?;
 
     // Pass the built-in functions as macro-generated structs into the cql object available from Jsonnet code.
     let mut cql = ObjValueBuilder::new();
@@ -1386,9 +1351,6 @@ fn main_jrsonnet(s: State) -> Result<String> {
     cql.member("fromHex".into())
         .hide()
         .value(Val::Func(FuncVal::StaticBuiltin(builtin_from_hex::INST)))?;
-    cql.member("calc".into())
-        .hide()
-        .value(Val::Func(FuncVal::StaticBuiltin(builtin_calc::INST)))?;
     cql.member("ss58".into())
         .hide()
         .value(Val::Func(FuncVal::StaticBuiltin(builtin_ss58::INST)))?;
@@ -1414,6 +1376,7 @@ fn main_jrsonnet(s: State) -> Result<String> {
         path.push(opts.input.input);
         s.import(path)?
     };
+    let tla = opts.tla.tla_opts()?;
     // Supply the Jsonnet code with top level arguments.
     let res = apply_tla(s.clone(), &tla, res)?;
 
@@ -1433,13 +1396,15 @@ fn main_jrsonnet(s: State) -> Result<String> {
 
 fn main_sync() {
     let s = State::default();
-    match main_jrsonnet(s.clone()) {
+    let opts = Opts::parse();
+    let trace_format = opts.trace.trace_format();
+    match main_jrsonnet(s.clone(), opts) {
         Ok(e) => {
             println!("{e}");
             process::exit(0)
         }
         Err(e) => {
-            eprintln!("{}", &e); // s.stringify_err()
+            eprintln!("{}", trace_format.format(&e).unwrap());
             process::exit(1)
         }
     }
