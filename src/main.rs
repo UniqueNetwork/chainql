@@ -781,6 +781,7 @@ fn make_pallet_key(
     let mut keyout = ObjValueBuilder::new();
     let mut encode_keyout = ObjValueBuilder::new();
     let mut encode_valueout = ObjValueBuilder::new();
+    let mut decode_valueout = ObjValueBuilder::new();
     let mut key_args = ObjValueBuilder::new();
     if let Some(storage) = data.storage {
         let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
@@ -818,6 +819,14 @@ fn make_pallet_key(
                         .member(entry.name.clone().into())
                         .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
                             builtin_encode_value {
+                                reg: registry.clone(),
+                                ty: ValueId(v),
+                            }
+                        )))))?;
+                    decode_valueout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_decode_value {
                                 reg: registry.clone(),
                                 ty: ValueId(v),
                             }
@@ -879,6 +888,14 @@ fn make_pallet_key(
                                 ty: ValueId(value),
                             }
                         )))))?;
+                    decode_valueout
+                        .member(entry.name.clone().into())
+                        .value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+                            builtin_decode_value {
+                                reg: registry.clone(),
+                                ty: ValueId(value),
+                            }
+                        )))))?;
                     key_args
                         .member(entry.name.clone().into())
                         .value(Val::Num(keys.len() as f64))?;
@@ -914,6 +931,9 @@ fn make_pallet_key(
     out.member("_encodeValue".into())
         .hide()
         .value(Val::Obj(encode_valueout.build()))?;
+    out.member("_decodeValue".into())
+        .hide()
+        .value(Val::Obj(decode_valueout.build()))?;
     out.member("_keyArgs".into())
         .hide()
         .value(Val::Obj(key_args.build()))?;
@@ -1053,6 +1073,19 @@ fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<Strin
     let mut out = Vec::new();
     encode_value(&reg, this.ty.0, false, value, &mut out, false)?;
     Ok(to_hex(&out))
+}
+
+/// Decode a [`value`] according to [`ty`], the type number of the calling object's inner registry.
+///
+/// This function is passed to Jsonnet and is callable from the code on certain objects.
+#[builtin(fields(
+    reg: Rc<PortableRegistry>,
+    ty: ValueId,
+))]
+fn builtin_decode_value(this: &builtin_decode_value, value: IStr) -> Result<Val> {
+    let value = from_hex(&value)?;
+
+    decode_value(&mut value.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
 }
 
 /// Encode the value [`v`] into some type, denoted in the calling object's inner registry by the number [`typ`].
