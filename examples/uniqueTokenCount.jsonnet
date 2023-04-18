@@ -8,11 +8,11 @@
 
 function(chainUrl)
 
-local chain = cql.chain(chainUrl).latest;
+local state = cql.chain(chainUrl).latest;
 
 local
 	// Load and cache all the keys pointing to the collections in the chain's storage
-	collections = chain.Common.CollectionById._preloadKeys,
+	collections = state.Common.CollectionById._preloadKeys,
 	// Filter collections corresponding to a specific type (NFT, Fungible, ReFungible)
 	collectionsByType(type) = std.filter(function(c) c.mode == type || std.isObject(c.mode) && std.objectHas(c.mode, type), std.objectValues(collections)),
 ;
@@ -20,16 +20,16 @@ local
 local data = {
 	nft: {
 		// Iterate over and count the tokens minted and burnt
-		minted: std.foldr(function(a, b) a + b, std.objectValues(chain.Nonfungible.TokensMinted._preloadKeys), 0),
-		burnt: std.foldr(function(a, b) a + b, std.objectValues(chain.Nonfungible.TokensBurnt._preloadKeys), 0),
+		minted: std.foldr(function(a, b) a + b, std.objectValues(state.Nonfungible.TokensMinted._preloadKeys), 0),
+		burnt: std.foldr(function(a, b) a + b, std.objectValues(state.Nonfungible.TokensBurnt._preloadKeys), 0),
 		alive: self.minted - self.burnt,
 		_collections:: collectionsByType('NFT'),
 		collectionCount: std.length(self._collections),
 	},
 	refungible: {
 		// Iterate over and count the tokens minted and burnt
-		minted: std.foldr(function(a, b) a + b, std.objectValues(chain.Refungible.TokensMinted._preloadKeys), 0),
-		burnt: std.foldr(function(a, b) a + b, std.objectValues(chain.Refungible.TokensBurnt._preloadKeys), 0),
+		minted: std.foldr(function(a, b) a + b, std.objectValues(state.Refungible.TokensMinted._preloadKeys), 0),
+		burnt: std.foldr(function(a, b) a + b, std.objectValues(state.Refungible.TokensBurnt._preloadKeys), 0),
 		alive: self.minted - self.burnt,
 		_collections:: collectionsByType('ReFungible'),
 		collectionCount: std.length(self._collections),

@@ -10,12 +10,12 @@
 
 function(chainUrl)
 
-  local chain = cql.chain(chainUrl).latest;
+  local state = cql.chain(chainUrl).latest;
   {
     // Iterate over every pallet and every storage in those pallets, and dump the contents into a JSON object
-    [palletName]: local pallet = chain[palletName]; {
+    [palletName]: local pallet = state[palletName]; {
       [storage]: if std.isObject(pallet[storage]) && std.objectHasEx(pallet[storage], '_preloadKeys', true) then pallet[storage]._preloadKeys else pallet[storage]
       for storage in std.objectFields(pallet)
     }
-    for palletName in std.objectFields(chain)
+    for palletName in std.objectFields(state)
   }

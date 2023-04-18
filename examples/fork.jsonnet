@@ -9,10 +9,10 @@
 // `chainql --tla-code=rawSpec="import 'parachain-spec-raw.json'" --tla-str=forkFrom="wss://some-parachain.node:443" fork.jsonnet`
 
 function(rawSpec, forkFrom)
-local sourceChain = cql.chain(forkFrom).latest;
+local sourceChainState = cql.chain(forkFrom).latest;
 
 // Load the data to encode into the chain spec and filter out the empty entries
-local raw = local sourceRaw = sourceChain._raw._preloadKeys; {
+local raw = local sourceRaw = sourceChainState._raw._preloadKeys; {
   [key]: cql.toHex(sourceRaw[key])
   for key in std.objectFields(sourceRaw)
   if sourceRaw[key] != null
@@ -28,10 +28,10 @@ auraKeys = [
 
 // Keys, the values of which should be taken from the passed spec rather than from the forked chain
 wantedKeys = [
-	sourceChain.ParachainInfo._key.ParachainId,
-	sourceChain.Sudo._key.Key,
-	sourceChain.System.BlockHash._key['0'],
-	sourceChain.System._key.ParentHash,
+	sourceChainState.ParachainInfo._key.ParachainId,
+	sourceChainState.Sudo._key.Key,
+	sourceChainState.System.BlockHash._key['0'],
+	sourceChainState.System._key.ParentHash,
 ] + auraKeys,
 
 // Keys to remove from the chain spec
@@ -39,14 +39,14 @@ unwantedPrefixes = [
 	// Aura.CurrentSlot
 	'0x57f8dc2f5ab09467896f47300f04243806155b3cd9a8c9e5e9a23fd5dc13a5ed',
 	// Ensure there will be no panics caused by unexpected kept state
-	sourceChain.ParachainSystem._key.ValidationData,
-	sourceChain.ParachainSystem._key.RelayStateProof,
-	sourceChain.ParachainSystem._key.HostConfiguration,
-	sourceChain.ParachainSystem._key.LastDmqMqcHead,
+	sourceChainState.ParachainSystem._key.ValidationData,
+	sourceChainState.ParachainSystem._key.RelayStateProof,
+	sourceChainState.ParachainSystem._key.HostConfiguration,
+	sourceChainState.ParachainSystem._key.LastDmqMqcHead,
 	// Part of head
-	sourceChain.System._key.BlockHash,
-	sourceChain.System._key.Number,
-	sourceChain.System._key.Digest,
+	sourceChainState.System._key.BlockHash,
+	sourceChainState.System._key.Number,
+	sourceChainState.System._key.Digest,
 ] + auraKeys,
 
 // Function to remove unwanted keys from the chain spec
@@ -76,9 +76,9 @@ local pow10(n) = std.foldl(function(a, _) a * std.bigint('10'), std.range(0, n),
 
 local
 	// Encoded key for a specific account, belonigng to //Alice
-	aliceAccount = sourceChain.System._encodeKey.Account(['0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d']),
+	aliceAccount = sourceChainState.System._encodeKey.Account(['0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d']),
 	// Encoded key for total issuance
-	totalIssuance = sourceChain.Balances._encodeKey.TotalIssuance([]),
+	totalIssuance = sourceChainState.Balances._encodeKey.TotalIssuance([]),
 	// One million 18-decimal tokens
 	millionTokens = pow10(6 + 18),
 ;
@@ -92,12 +92,12 @@ outSpec {
 				// Subtract the amount present in the chain spec (`super`, referring to the existing `top` section)
 				// and add the million tokens that they will have instead.
 				[totalIssuance]:
-					if std.objectHas(super, totalIssuance) then sourceChain.Balances._decodeValue.TotalIssuance(super[totalIssuance]) else std.bigint(0)
-					- if std.objectHas(super, aliceAccount) then sourceChain.System._decodeValue.Account(super[aliceAccount]).data.free else std.bigint(0)
+					if std.objectHas(super, totalIssuance) then sourceChainState.Balances._decodeValue.TotalIssuance(super[totalIssuance]) else std.bigint(0)
+					- if std.objectHas(super, aliceAccount) then sourceChainState.System._decodeValue.Account(super[aliceAccount]).data.free else std.bigint(0)
 					+ millionTokens
 				,
 				// Encode Alice's account information
-				[aliceAccount]: sourceChain.System._encodeValue.Account({
+				[aliceAccount]: sourceChainState.System._encodeValue.Account({
 					nonce: 0,
 					consumers: 3,
 					providers: 1,
