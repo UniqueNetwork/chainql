@@ -18,9 +18,6 @@ local raw = local sourceRaw = sourceChain._raw._preloadKeys; {
   if sourceRaw[key] != null
 };
 
-// Categorize the types for decoding used on the source chain, using the function present in another file
-local typeNames = (import './typeNames.jsonnet')(sourceChain);
-
 local
 auraKeys = [
 	// AuraExt.Authorities, we don't have aura pallet enabled for some reason, to refer using cql api
@@ -95,12 +92,12 @@ outSpec {
 				// Subtract the amount present in the chain spec (`super`, referring to the existing `top` section)
 				// and add the million tokens that they will have instead.
 				[totalIssuance]:
-					if std.objectHas(super, totalIssuance) then sourceChain._decode(typeNames.u128, super[totalIssuance]) else std.bigint(0)
-					- if std.objectHas(super, aliceAccount) then sourceChain._decode(typeNames.AccountInfo, super[aliceAccount]).data.free else std.bigint(0)
+					if std.objectHas(super, totalIssuance) then sourceChain.Balances._decodeValue.TotalIssuance(super[totalIssuance]) else std.bigint(0)
+					- if std.objectHas(super, aliceAccount) then sourceChain.System._decodeValue.Account(super[aliceAccount]).data.free else std.bigint(0)
 					+ millionTokens
 				,
 				// Encode Alice's account information
-				[aliceAccount]: sourceChain._encode(typeNames.AccountInfo, {
+				[aliceAccount]: sourceChain.System._encodeValue.Account({
 					nonce: 0,
 					consumers: 3,
 					providers: 1,
