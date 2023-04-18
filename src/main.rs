@@ -255,7 +255,7 @@ where
     T::Err: std::fmt::Display,
 {
     let v = match v {
-        Val::BigInt(n) => (&*n).clone(),
+        Val::BigInt(n) => (*n).clone(),
         _ => throw!("unexpected type: {}", v.value_type()),
     };
     Ok(v.to_string()
@@ -796,10 +796,8 @@ fn make_pallet_key(
             let mut entry_key = vec![];
             entry_key.extend_from_slice(&pallet_key);
             entry_key.extend_from_slice(&key_key);
-            if opts.omit_empty {
-                if !client.contains_data_for(&entry_key).map_err(client_error)? {
-                    continue;
-                }
+            if opts.omit_empty && !client.contains_data_for(&entry_key).map_err(client_error)? {
+                continue;
             }
             let default = match entry.modifier {
                 StorageEntryModifier::Optional => None,
@@ -856,9 +854,7 @@ fn make_pallet_key(
                     let tuple = registry.resolve(key.id).expect("key tuple");
                     let fields: Vec<_> = match &tuple.type_def {
                         TypeDef::Composite(t) => t.fields.iter().map(|f| f.ty).collect(),
-                        TypeDef::Tuple(t) if hashers.len() != 1 => {
-                            t.fields.iter().cloned().collect()
-                        }
+                        TypeDef::Tuple(t) if hashers.len() != 1 => t.fields.to_vec(),
                         _ => [key].into_iter().collect(),
                     };
 
@@ -876,7 +872,7 @@ fn make_pallet_key(
 
                         hashers
                             .into_iter()
-                            .zip(fields.iter().map(|s| *s))
+                            .zip(fields.iter().copied())
                             .collect::<Vec<(_, _)>>()
                     };
                     encode_keyout
@@ -1262,7 +1258,7 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
     let opts = opts.unwrap_or_default();
     let meta: RuntimeMetadataV14 = serde_json::from_value(
-        serde_json::to_value(meta).or_else(|_| Err(RuntimeError("bad metadata".into())))?,
+        serde_json::to_value(meta).map_err(|_| RuntimeError("bad metadata".into()))?,
     )
     .unwrap();
     let mut data = BTreeMap::new();
@@ -1372,7 +1368,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
     };
     let tla = opts.tla.tla_opts()?;
     // Supply the Jsonnet code with top level arguments.
-    let res = apply_tla(s.clone(), &tla, res)?;
+    let res = apply_tla(s, &tla, res)?;
 
     // Output the result as either string or JSON.
     Ok(if opts.string {
@@ -1383,7 +1379,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
         };
         res
     } else {
-        let res = res.manifest(&JsonFormat::cli(3))?;
+        let res = res.manifest(JsonFormat::cli(3))?;
         res.as_str().to_owned()
     })
 }
@@ -1392,7 +1388,7 @@ fn main_sync() {
     let s = State::default();
     let opts = Opts::parse();
     let trace_format = opts.trace.trace_format();
-    match main_jrsonnet(s.clone(), opts) {
+    match main_jrsonnet(s, opts) {
         Ok(e) => {
             println!("{e}");
             process::exit(0)

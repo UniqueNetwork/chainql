@@ -96,7 +96,7 @@ pub struct LiveClient {
 impl LiveClient {
     pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         eprintln!("loading keys by prefix {prefix:0>2x?}");
-        let prefix_str = format!("0x{}", hex::encode(&prefix));
+        let prefix_str = format!("0x{}", hex::encode(prefix));
 
         let handle = Handle::current();
         let mut fetched = vec![];
@@ -145,7 +145,7 @@ impl LiveClient {
         let value = if let Some(value) = value {
             assert!(value.starts_with("0x"));
             let value = &value[2..];
-            let data = hex::decode(&value).expect("hex value");
+            let data = hex::decode(value).expect("hex value");
             Some(data)
         } else {
             None
@@ -184,11 +184,11 @@ impl LiveClient {
         for (key, value) in value {
             assert!(key.starts_with("0x"));
             let key = &key[2..];
-            let key = hex::decode(&key).expect("hex value");
+            let key = hex::decode(key).expect("hex value");
             if let Some(value) = value {
                 assert!(value.starts_with("0x"));
                 let value = &value[2..];
-                let data = hex::decode(&value).expect("hex value");
+                let data = hex::decode(value).expect("hex value");
                 cache.insert(key, Some(data));
             } else {
                 cache.insert(key, None);
@@ -213,11 +213,11 @@ impl LiveClient {
     }
     fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
         eprintln!("checking for keys under {prefix:0>2x?}");
-        let prefix_str = format!("0x{}", hex::encode(&prefix));
+        let prefix_str = format!("0x{}", hex::encode(prefix));
 
         let handle = Handle::current();
         let chunk = handle.block_on(self.real.get_keys_paged(
-            prefix_str.clone(),
+            prefix_str,
             1,
             None,
             Some(self.block.as_str().to_owned()),
