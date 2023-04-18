@@ -6,7 +6,7 @@
 // - `chainUrl`: the URL of the chain to pull data from.
 //
 // ### Usage 
-// `chainql --tla-str=chainUrl=ws://my-chain:9944 readableDump.jsonnet > dump.json`
+// `chainql --tla-str=chainUrl=ws://localhost:9944 readableDump.jsonnet > dump.json`
 
 function(chainUrl)
 

@@ -74,15 +74,16 @@ local outSpec = rawSpec {
 	},
 };
 
+// Take 10 to the power of number `n`
+local pow10(n) = std.foldl(function(a, _) a * std.bigint('10'), std.range(0, n), std.bigint('1'));
+
 local
 	// Encoded key for a specific account, belonigng to //Alice
 	aliceAccount = sourceChain.System._encodeKey.Account(['0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d']),
 	// Encoded key for total issuance
 	totalIssuance = sourceChain.Balances._encodeKey.TotalIssuance([]),
-	// Single nominal for a 18-decimal token
- 	tokenNominal = cql.calc(["10", "18", "**"]),
-	// One million tokens
- 	million = cql.calc([tokenNominal, "10", "6", "**", "*"]),
+	// One million 18-decimal tokens
+	millionTokens = pow10(6 + 18),
 ;
 
 // Further modify the spec to additionally include Alice's account and totalIssuance, modified by their account's inclusion
@@ -93,13 +94,11 @@ outSpec {
 				// Amend total issuance to represent the change in Alice's funds.
 				// Subtract the amount present in the chain spec (`super`, referring to the existing `top` section)
 				// and add the million tokens that they will have instead.
-				[totalIssuance]: cql.calc([
-					million,
-					if std.objectHas(super, totalIssuance) then sourceChain._decode(typeNames.u128, super[totalIssuance]) else '0',
-					if std.objectHas(super, aliceAccount) then sourceChain._decode(typeNames.AccountInfo, super[aliceAccount]).data.free else '0',
-					// postfix notation
-					'-', '+',
-				]),
+				[totalIssuance]:
+					if std.objectHas(super, totalIssuance) then sourceChain._decode(typeNames.u128, super[totalIssuance]) else std.bigint(0)
+					- if std.objectHas(super, aliceAccount) then sourceChain._decode(typeNames.AccountInfo, super[aliceAccount]).data.free else std.bigint(0)
+					+ millionTokens
+				,
 				// Encode Alice's account information
 				[aliceAccount]: sourceChain._encode(typeNames.AccountInfo, {
 					nonce: 0,
@@ -107,10 +106,10 @@ outSpec {
 					providers: 1,
 					sufficients: 0,
 					data: {
-						free: million,
-						reserved: "0",
-						misc_frozen: "0",
-						fee_frozen: "0",
+						free: millionTokens,
+						reserved: std.bigint('0'),
+						misc_frozen: std.bigint('0'),
+						fee_frozen: std.bigint('0'),
 					},
 				},)
 			},

@@ -4,7 +4,7 @@
 // - `chainUrl`: the URL of the chain to pull data from.
 //
 // ### Usage
-// `chainql --tla-str=chainUrl=wss://eu-ws-quartz.unique.network:9944 uniqueTokenCount.jsonnet`
+// `chainql -S --tla-str=chainUrl=wss://eu-ws-quartz.unique.network:9944 uniqueTokenCount.jsonnet`
 
 function(chainUrl)
 
