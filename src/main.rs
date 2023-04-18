@@ -12,16 +12,16 @@ use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
 use frame_metadata::{
     PalletMetadata, RuntimeMetadataV14, StorageEntryModifier, StorageEntryType, StorageHasher,
 };
-use jrsonnet_cli::{InputOpts, StdOpts, TlaOpts, TraceOpts, MiscOpts};
+use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
 use jrsonnet_evaluator::{
     apply_tla,
     error::{Error as JrError, ErrorKind::RuntimeError, Result},
     function::{builtin, FuncVal},
     manifest::JsonFormat,
-    tb,
+    tb, throw,
     typed::Typed,
     val::{ArrValue, StrValue, ThunkValue},
-    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val, throw,
+    IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
@@ -225,11 +225,7 @@ fn extract_newtypes(
     typ: UntrackedSymbol<TypeId>,
     compact: bool,
 ) -> Result<(bool, UntrackedSymbol<TypeId>)> {
-    match &reg
-        .resolve(typ.id)
-        .ok_or_else(missing_resolve)?
-        .type_def
-    {
+    match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
         TypeDef::Composite(c) if c.fields.len() == 1 => {
             extract_newtypes(reg, c.fields[0].ty, compact)
         }
@@ -254,16 +250,23 @@ fn maybe_json_parse(v: Val, from_string: bool) -> Result<Val> {
     }
 }
 
-fn bigint_encode<T: FromStr>(v: Val) -> Result<T> where T::Err: std::fmt::Display {
+fn bigint_encode<T: FromStr>(v: Val) -> Result<T>
+where
+    T::Err: std::fmt::Display,
+{
     let v = match v {
         Val::BigInt(n) => (&*n).clone(),
-        _ => throw!("unexpected type: {}", v.value_type())
+        _ => throw!("unexpected type: {}", v.value_type()),
     };
-    Ok(v.to_string().parse().map_err(|e| RuntimeError(format!("bigint encode: {e}").into()))?)
+    Ok(v.to_string()
+        .parse()
+        .map_err(|e| RuntimeError(format!("bigint encode: {e}").into()))?)
 }
 fn bigint_decode<T: std::fmt::Display>(v: T) -> Result<Val> {
     let v = v.to_string();
-    let v: BigInt = v.parse().map_err(|e| RuntimeError(format!("bigint decode: {e}").into()))?;
+    let v: BigInt = v
+        .parse()
+        .map_err(|e| RuntimeError(format!("bigint decode: {e}").into()))?;
     Ok(Val::BigInt(Box::new(v)))
 }
 /// Encode a value [`val`] according to the type [`typ`] registered in the [`reg`], adding it to [`out`].
@@ -281,11 +284,7 @@ where
     let (new_compact, new_typ) = extract_newtypes(reg, typ, compact)?;
     compact = new_compact;
     typ = new_typ;
-    match &reg
-        .resolve(typ.id)
-        .ok_or_else(missing_resolve)?
-        .type_def
-    {
+    match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
         TypeDef::Composite(comp) => {
             let val = maybe_json_parse(val, from_string)?;
             encode_obj_value(reg, &comp.fields, compact, val, out)?;
@@ -468,11 +467,7 @@ where
     compact = new_compact;
     typ = new_typ;
     Ok(
-        match &reg
-            .resolve(typ.id)
-            .ok_or_else(missing_resolve)?
-            .type_def
-        {
+        match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
             TypeDef::Composite(c) => decode_obj_value(dec, reg, &c.fields, compact)?,
             TypeDef::Variant(e) => {
                 let idx = u8::decode(dec).map_err(codec_error)?;
@@ -517,9 +512,7 @@ where
             }
             TypeDef::Array(arr) => {
                 if matches!(
-                    reg.resolve(arr.type_param.id)
-                        .expect("type exist")
-                        .type_def,
+                    reg.resolve(arr.type_param.id).expect("type exist").type_def,
                     TypeDef::Primitive(TypeDefPrimitive::U8)
                 ) {
                     let mut raw = vec![0; arr.len as usize];
@@ -863,7 +856,9 @@ fn make_pallet_key(
                     let tuple = registry.resolve(key.id).expect("key tuple");
                     let fields: Vec<_> = match &tuple.type_def {
                         TypeDef::Composite(t) => t.fields.iter().map(|f| f.ty).collect(),
-                        TypeDef::Tuple(t) if hashers.len() != 1 => t.fields.iter().cloned().collect(),
+                        TypeDef::Tuple(t) if hashers.len() != 1 => {
+                            t.fields.iter().cloned().collect()
+                        }
                         _ => [key].into_iter().collect(),
                     };
 
@@ -1333,9 +1328,8 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
     let import_resolver = opts.misc.import_resolver();
     s.set_import_resolver(import_resolver);
     if let Some(std) = opts.std.context_initializer(&s)? {
-    s.set_context_initializer(std);
+        s.set_context_initializer(std);
     }
-
 
     // Pass the built-in functions as macro-generated structs into the cql object available from Jsonnet code.
     let mut cql = ObjValueBuilder::new();
