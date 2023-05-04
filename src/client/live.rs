@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, result};
 
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
 use jrsonnet_gcmodule::Trace;
-use jsonrpsee::{core::RpcResult, proc_macros::rpc, ws_client::WsClient};
+use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
 use parity_scale_codec::Decode;
 use serde::Deserialize;
 use thiserror::Error;
@@ -63,8 +63,12 @@ impl ClientShared {
     pub fn new(url: impl AsRef<str>) -> Result<Self> {
         let handle = Handle::current();
 
-        let client =
-            handle.block_on(jsonrpsee::ws_client::WsClientBuilder::default().build(url))?;
+        let client = handle.block_on(
+            jsonrpsee::ws_client::WsClientBuilder::default()
+                .max_request_size(20 * 1024 * 1024)
+                .max_response_size(20 * 1024 * 1024)
+                .build(url),
+        )?;
         Ok(Self {
             real: Rc::new(client),
         })
@@ -154,13 +158,25 @@ impl LiveClient {
         Ok(value)
     }
     pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
-        // TODO: in case of large batches, check errors, and increase chunk size on demand
-        for chunk in keys.chunks(10000) {
-            self.preload_storage_naive(chunk)?;
+        for chunk in keys.chunks(30000) {
+            self.preload_storage_fallback(chunk)?;
         }
         Ok(())
     }
-    pub fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
+    fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
+        let chunk_size = keys.len();
+        match self.preload_storage_naive(keys) {
+            Ok(()) => Ok(()),
+            Err(Error::Rpc(jsonrpsee::core::Error::Call(c))) if c.code() == -32702 => {
+                let (keysa, keysb) = keys.split_at(chunk_size / 2);
+                self.preload_storage_fallback(&keysa)?;
+                self.preload_storage_fallback(&keysb)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+    fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
         let mut cache = self.key_value_cache.borrow_mut();
         let mut list = Vec::new();
         for key in keys {
