@@ -9,9 +9,9 @@ edition = "2021"
 clap = { version = "4.0", features = ["derive"] }
 frame-metadata = { version = "15.0.0", package = "chainql-frame-metadata", path = "./frame-metadata/frame-metadata" }
 hex = "0.4.3"
-jrsonnet-evaluator = { version = "0.5.0-pre8", features = ["exp-destruct", "exp-bigint"] }
-jrsonnet-stdlib = { version = "0.5.0-pre8", features = ["exp-bigint"] }
-jrsonnet-cli = { version = "0.5.0-pre8", features = ["exp-bigint"] }
+jrsonnet-evaluator = { version = "0.5.0-pre9", features = ["exp-destruct", "exp-bigint"] }
+jrsonnet-stdlib = { version = "0.5.0-pre9", features = ["exp-bigint"] }
+jrsonnet-cli = { version = "0.5.0-pre9", features = ["exp-bigint"] }
 jrsonnet-gcmodule = "0.3.4"
 jsonrpsee = { version = "0.16.2", features = ["macros", "ws-client"] }
 parity-scale-codec = { version = "3.1.5", features = ["derive"] }
