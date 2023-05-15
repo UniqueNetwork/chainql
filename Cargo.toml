@@ -2,7 +2,7 @@
 name = "chainql"
 description = "Query substrate chains using jsonnet"
 license = "MIT"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [dependencies]
