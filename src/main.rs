@@ -31,7 +31,11 @@ use scale_info::{
     TypeDefPrimitive,
 };
 use serde::Deserialize;
-use sp_core::{blake2_128, blake2_256, crypto::Ss58Codec, twox_128, twox_256, twox_64, U256};
+use sp_core::{
+    blake2_128, blake2_256,
+    crypto::{Ss58AddressFormat, Ss58Codec},
+    twox_128, twox_256, twox_64, ByteArray, Pair, U256,
+};
 use tokio::runtime::Handle;
 
 mod client;
@@ -300,7 +304,7 @@ where
             }
             let val = maybe_json_parse(val, from_string)?;
             let v = ObjValue::from_untyped(val)?;
-            let name = &v.fields();
+            let name = &v.fields(true);
             ensure!(name.len() == 1, "not a enum");
             let name = name[0].clone();
             let value = v
@@ -1137,6 +1141,33 @@ fn builtin_ss58(v: IStr) -> Result<IStr> {
         .map_err(|e| RuntimeError(format!("wrong ss58: {e}").into()))?;
     Ok(to_hex(s.as_ref()).into())
 }
+#[builtin]
+fn builtin_ss58_encode(v: IStr, format: Option<u16>) -> Result<IStr> {
+    let raw = from_hex(&v)?;
+    let s = sp_core::crypto::AccountId32::from_slice(&raw)
+        .map_err(|()| RuntimeError(format!("bad accountid32 length").into()))?;
+    let out = s.to_ss58check_with_version(
+        format
+            .map(Ss58AddressFormat::custom)
+            .unwrap_or_else(|| Ss58AddressFormat::custom(42)),
+    );
+    Ok(out.into())
+}
+
+#[builtin]
+fn builtin_sr25519_seed(v: IStr) -> Result<IStr> {
+    let s = sp_core::sr25519::Pair::from_string_with_seed(v.as_str(), None)
+        .map_err(|e| RuntimeError(format!("invalid seed: {e:?}").into()))?;
+    let public = s.0.public();
+    Ok(to_hex(&public).into())
+}
+#[builtin]
+fn builtin_ed25519_seed(v: IStr) -> Result<IStr> {
+    let s = sp_core::ed25519::Pair::from_string_with_seed(v.as_str(), None)
+        .map_err(|e| RuntimeError(format!("invalid seed: {e:?}").into()))?;
+    let public = s.0.public();
+    Ok(to_hex(&public).into())
+}
 
 /// Create a Jsonnet object of a blockchain block.
 fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
@@ -1241,6 +1272,12 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
     Ok(obj.build())
 }
 
+#[builtin]
+fn builtin_twox128_of_string(data: IStr) -> Result<IStr> {
+    let data = sp_core::twox_128(&data.as_bytes());
+    Ok(to_hex(&data).into())
+}
+
 /// Create a mock block Jsonnet object from some parsed data dump.
 ///
 /// This function is passed to Jsonnet and is callable from the code.
@@ -1262,7 +1299,7 @@ fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<Ob
     )
     .unwrap();
     let mut data = BTreeMap::new();
-    for key in dump.fields() {
+    for key in dump.fields(true) {
         let k = from_hex(&key)?;
         let v = dump.get(key)?.expect("iterating over fields");
         let v = v
@@ -1335,6 +1372,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
     cql.member("dump".into())
         .hide()
         .value(Val::Func(FuncVal::StaticBuiltin(builtin_dump::INST)))?;
+
     cql.member("toHex".into())
         .hide()
         .value(Val::Func(FuncVal::StaticBuiltin(builtin_to_hex::INST)))?;
@@ -1344,6 +1382,27 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
     cql.member("ss58".into())
         .hide()
         .value(Val::Func(FuncVal::StaticBuiltin(builtin_ss58::INST)))?;
+    cql.member("ss58Encode".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(builtin_ss58_encode::INST)))?;
+
+    cql.member("sr25519Seed".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(
+            builtin_sr25519_seed::INST,
+        )))?;
+    cql.member("ed25519Seed".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(
+            builtin_ed25519_seed::INST,
+        )))?;
+
+    cql.member("twox128String".into())
+        .hide()
+        .value(Val::Func(FuncVal::StaticBuiltin(
+            builtin_twox128_of_string::INST,
+        )))?;
+
     s.context_initializer()
         .as_any()
         .downcast_ref::<jrsonnet_stdlib::ContextInitializer>()
@@ -1379,7 +1438,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
         };
         res
     } else {
-        let res = res.manifest(JsonFormat::cli(3))?;
+        let res = res.manifest(JsonFormat::cli(3, true))?;
         res.as_str().to_owned()
     })
 }

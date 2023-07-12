@@ -13,7 +13,7 @@
           overlays = [ rust-overlay.overlay ];
         };
         rust = ((pkgs.rustChannelOf { date = "2022-11-20"; channel = "nightly"; }).default.override {
-          extensions = [ "rust-src" ];
+          extensions = [ "rust-src" "rust-analyzer" ];
           targets = ["x86_64-unknown-linux-musl" "x86_64-unknown-linux-gnu"];
         });
       in

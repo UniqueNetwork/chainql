@@ -18,6 +18,8 @@ pub enum Error {
     UnsupportedMetadataVersion,
     #[error("block not found: {}", .0.map(|v| v.to_string()).unwrap_or_else(|| "latest".to_string()))]
     BlockNotFound(Option<u32>),
+    #[error("block history is not supported")]
+    BlockHistoryNotSupported,
 }
 type Result<T, E = Error> = result::Result<T, E>;
 
@@ -82,6 +84,7 @@ impl ClientShared {
         Ok(LiveClient {
             real: self.real.clone(),
             key_value_cache: Rc::new(RefCell::new(HashMap::new())),
+            fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
             block: Rc::new(block),
         })
     }
@@ -94,6 +97,7 @@ pub struct LiveClient {
     #[trace(skip)]
     #[allow(clippy::type_complexity)]
     key_value_cache: Rc<RefCell<HashMap<Vec<u8>, Option<Vec<u8>>>>>,
+    fetched_prefixes: Rc<RefCell<Vec<u8>>>,
     #[trace(skip)]
     block: Rc<String>,
 }
@@ -261,5 +265,9 @@ impl ClientT for LiveClient {
 
     fn contains_data_for(&self, prefix: &[u8]) -> super::Result<bool> {
         Ok(self.contains_data_for(prefix)?)
+    }
+
+    fn next(&self) -> super::Result<super::Client> {
+        Err(Error::BlockHistoryNotSupported.into())
     }
 }

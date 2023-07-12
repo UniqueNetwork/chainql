@@ -10,6 +10,8 @@ pub mod live;
 pub enum Error {
     #[error("live: {0}")]
     Live(#[from] live::Error),
+    #[error("dump: {0}")]
+    Dump(#[from] dump::Error),
 }
 type Result<T, E = Error> = result::Result<T, E>;
 
@@ -19,6 +21,7 @@ pub trait ClientT {
     fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()>;
     fn get_metadata(&self) -> Result<RuntimeMetadataV14>;
     fn contains_data_for(&self, prefix: &[u8]) -> Result<bool>;
+    fn next(&self) -> Result<Client>;
 }
 
 #[derive(Clone, Trace)]
@@ -47,5 +50,9 @@ impl ClientT for Client {
 
     fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
         self.0.contains_data_for(prefix)
+    }
+
+    fn next(&self) -> Result<Client> {
+        self.0.next()
     }
 }

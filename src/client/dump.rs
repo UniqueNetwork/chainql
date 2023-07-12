@@ -1,8 +1,15 @@
 use std::collections::BTreeMap;
 
 use frame_metadata::RuntimeMetadataV14;
+use thiserror::Error;
 
 use super::ClientT;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("dump client doesn't support walking")]
+    NoNextBlock,
+}
 
 pub struct ClientDump {
     pub meta: RuntimeMetadataV14,
@@ -49,5 +56,9 @@ impl ClientT for ClientDump {
 
     fn get_metadata(&self) -> super::Result<RuntimeMetadataV14> {
         Ok(self.meta.clone())
+    }
+
+    fn next(&self) -> super::Result<super::Client> {
+        Err(Error::NoNextBlock.into())
     }
 }
