@@ -1403,13 +1403,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
             builtin_twox128_of_string::INST,
         )))?;
 
-    s.context_initializer()
-        .as_any()
-        .downcast_ref::<jrsonnet_stdlib::ContextInitializer>()
-        .expect("std context")
-        .settings_mut()
-        .globals
-        .insert("cql".into(), Thunk::evaluated(Val::Obj(cql.build())));
+    s.add_global("cql".into(), Thunk::evaluated(Val::Obj(cql.build())));
 
     // Resolve the Jsonnet code supplied to chainql.
     let res = if opts.input.exec {

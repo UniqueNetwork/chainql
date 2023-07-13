@@ -2,16 +2,16 @@
 name = "chainql"
 description = "Query substrate chains using jsonnet"
 license = "MIT"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 frame-metadata = { version = "15.0.0", package = "chainql-frame-metadata", path = "./frame-metadata/frame-metadata" }
 hex = "0.4.3"
-jrsonnet-evaluator = { version = "0.5.0-pre9", features = ["exp-destruct", "exp-bigint", "exp-object-iteration", "exp-preserve-order"] }
-jrsonnet-stdlib = { version = "0.5.0-pre9", features = ["exp-bigint", "exp-preserve-order"] }
-jrsonnet-cli = { version = "0.5.0-pre9", features = ["exp-bigint", "exp-preserve-order"] }
+jrsonnet-evaluator = { version = "0.5.0-pre91", features = ["exp-destruct", "exp-bigint", "exp-object-iteration", "exp-preserve-order"] }
+jrsonnet-stdlib = { version = "0.5.0-pre91", features = ["exp-bigint", "exp-preserve-order"] }
+jrsonnet-cli = { version = "0.5.0-pre91", features = ["exp-bigint", "exp-preserve-order"] }
 jrsonnet-gcmodule = "0.3.4"
 jsonrpsee = { version = "0.18.1", features = ["macros", "ws-client"] }
 parity-scale-codec = { version = "3.1.5", features = ["derive"] }
