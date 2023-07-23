@@ -1,0 +1,15 @@
+[package]
+name = "chainql"
+description = "Query substrate chains using jsonnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+chainql-core.workspace = true
+tokio.workspace = true
+jrsonnet-evaluator.workspace = true
+jrsonnet-stdlib.workspace = true
+jrsonnet-cli.workspace = true

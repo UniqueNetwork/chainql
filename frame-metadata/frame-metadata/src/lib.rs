@@ -20,17 +20,17 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #[cfg(all(
-    any(feature = "decode", feature = "serde_full"),
-    any(
-        feature = "v13",
-        feature = "v12",
-        feature = "v11",
-        feature = "v10",
-        feature = "v9",
-        feature = "v8",
-        feature = "legacy"
-    ),
-    not(feature = "std")
+	any(feature = "decode", feature = "serde_full"),
+	any(
+		feature = "v13",
+		feature = "v12",
+		feature = "v11",
+		feature = "v10",
+		feature = "v9",
+		feature = "v8",
+		feature = "legacy"
+	),
+	not(feature = "std")
 ))]
 compile_error!("decode and serde_full features prior to v14 require std");
 
@@ -41,23 +41,23 @@ use serde::{Deserialize, Serialize};
 use codec::{Decode, Error, Input};
 
 cfg_if::cfg_if! {
-    if #[cfg(not(feature = "std"))] {
-        extern crate alloc;
-        use alloc::vec::Vec;
-    }
+	if #[cfg(not(feature = "std"))] {
+		extern crate alloc;
+		use alloc::vec::Vec;
+	}
 }
 
 use codec::{Encode, Output};
 
 /// A type that decodes to a different type than it encodes.
 #[cfg(any(
-    feature = "v13",
-    feature = "v12",
-    feature = "v11",
-    feature = "v10",
-    feature = "v9",
-    feature = "v8",
-    feature = "legacy"
+	feature = "v13",
+	feature = "v12",
+	feature = "v11",
+	feature = "v10",
+	feature = "v9",
+	feature = "v8",
+	feature = "legacy"
 ))]
 pub mod decode_different;
 
@@ -101,12 +101,6 @@ pub use self::v14::*;
 #[cfg_attr(feature = "serde_full", derive(Serialize))]
 pub struct RuntimeMetadataPrefixed(pub u32, pub RuntimeMetadata);
 
-impl Into<Vec<u8>> for RuntimeMetadataPrefixed {
-    fn into(self) -> Vec<u8> {
-        self.encode()
-    }
-}
-
 /// The metadata of a runtime.
 /// The version ID encoded/decoded through
 /// the enum nature of `RuntimeMetadata`.
@@ -114,87 +108,87 @@ impl Into<Vec<u8>> for RuntimeMetadataPrefixed {
 #[cfg_attr(feature = "decode", derive(Decode))]
 #[cfg_attr(feature = "serde_full", derive(Serialize))]
 pub enum RuntimeMetadata {
-    /// Unused; enum filler.
-    V0(RuntimeMetadataDeprecated),
-    /// Version 1 for runtime metadata. No longer used.
-    V1(RuntimeMetadataDeprecated),
-    /// Version 2 for runtime metadata. No longer used.
-    V2(RuntimeMetadataDeprecated),
-    /// Version 3 for runtime metadata. No longer used.
-    V3(RuntimeMetadataDeprecated),
-    /// Version 4 for runtime metadata. No longer used.
-    V4(RuntimeMetadataDeprecated),
-    /// Version 5 for runtime metadata. No longer used.
-    V5(RuntimeMetadataDeprecated),
-    /// Version 6 for runtime metadata. No longer used.
-    V6(RuntimeMetadataDeprecated),
-    /// Version 7 for runtime metadata. No longer used.
-    V7(RuntimeMetadataDeprecated),
-    /// Version 8 for runtime metadata.
-    #[cfg(any(feature = "v8", feature = "legacy"))]
-    V8(v8::RuntimeMetadataV8),
-    /// Version 8 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v8"))]
-    V8(OpaqueMetadata),
-    /// Version 9 for runtime metadata.
-    #[cfg(any(feature = "v9", feature = "legacy"))]
-    V9(v9::RuntimeMetadataV9),
-    /// Version 9 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v9"))]
-    V9(OpaqueMetadata),
-    /// Version 10 for runtime metadata.
-    #[cfg(any(feature = "v10", feature = "legacy"))]
-    V10(v10::RuntimeMetadataV10),
-    /// Version 10 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v10"))]
-    V10(OpaqueMetadata),
-    /// Version 11 for runtime metadata.
-    #[cfg(any(feature = "v11", feature = "legacy"))]
-    V11(v11::RuntimeMetadataV11),
-    /// Version 11 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v11"))]
-    V11(OpaqueMetadata),
-    /// Version 12 for runtime metadata
-    #[cfg(any(feature = "v12", feature = "legacy"))]
-    V12(v12::RuntimeMetadataV12),
-    /// Version 12 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v12"))]
-    V12(OpaqueMetadata),
-    /// Version 13 for runtime metadata.
-    #[cfg(any(feature = "v13", feature = "legacy"))]
-    V13(v13::RuntimeMetadataV13),
-    /// Version 13 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v13"))]
-    V13(OpaqueMetadata),
-    /// Version 14 for runtime metadata.
-    #[cfg(feature = "v14")]
-    V14(v14::RuntimeMetadataV14),
-    /// Version 14 for runtime metadata, as raw encoded bytes.
-    #[cfg(not(feature = "v14"))]
-    V14(OpaqueMetadata),
+	/// Unused; enum filler.
+	V0(RuntimeMetadataDeprecated),
+	/// Version 1 for runtime metadata. No longer used.
+	V1(RuntimeMetadataDeprecated),
+	/// Version 2 for runtime metadata. No longer used.
+	V2(RuntimeMetadataDeprecated),
+	/// Version 3 for runtime metadata. No longer used.
+	V3(RuntimeMetadataDeprecated),
+	/// Version 4 for runtime metadata. No longer used.
+	V4(RuntimeMetadataDeprecated),
+	/// Version 5 for runtime metadata. No longer used.
+	V5(RuntimeMetadataDeprecated),
+	/// Version 6 for runtime metadata. No longer used.
+	V6(RuntimeMetadataDeprecated),
+	/// Version 7 for runtime metadata. No longer used.
+	V7(RuntimeMetadataDeprecated),
+	/// Version 8 for runtime metadata.
+	#[cfg(any(feature = "v8", feature = "legacy"))]
+	V8(v8::RuntimeMetadataV8),
+	/// Version 8 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v8"))]
+	V8(OpaqueMetadata),
+	/// Version 9 for runtime metadata.
+	#[cfg(any(feature = "v9", feature = "legacy"))]
+	V9(v9::RuntimeMetadataV9),
+	/// Version 9 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v9"))]
+	V9(OpaqueMetadata),
+	/// Version 10 for runtime metadata.
+	#[cfg(any(feature = "v10", feature = "legacy"))]
+	V10(v10::RuntimeMetadataV10),
+	/// Version 10 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v10"))]
+	V10(OpaqueMetadata),
+	/// Version 11 for runtime metadata.
+	#[cfg(any(feature = "v11", feature = "legacy"))]
+	V11(v11::RuntimeMetadataV11),
+	/// Version 11 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v11"))]
+	V11(OpaqueMetadata),
+	/// Version 12 for runtime metadata
+	#[cfg(any(feature = "v12", feature = "legacy"))]
+	V12(v12::RuntimeMetadataV12),
+	/// Version 12 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v12"))]
+	V12(OpaqueMetadata),
+	/// Version 13 for runtime metadata.
+	#[cfg(any(feature = "v13", feature = "legacy"))]
+	V13(v13::RuntimeMetadataV13),
+	/// Version 13 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v13"))]
+	V13(OpaqueMetadata),
+	/// Version 14 for runtime metadata.
+	#[cfg(feature = "v14")]
+	V14(v14::RuntimeMetadataV14),
+	/// Version 14 for runtime metadata, as raw encoded bytes.
+	#[cfg(not(feature = "v14"))]
+	V14(OpaqueMetadata),
 }
 
 impl RuntimeMetadata {
-    /// Get the version number of the metadata.
-    pub fn version(&self) -> u32 {
-        match self {
-            RuntimeMetadata::V0(_) => 0,
-            RuntimeMetadata::V1(_) => 1,
-            RuntimeMetadata::V2(_) => 2,
-            RuntimeMetadata::V3(_) => 3,
-            RuntimeMetadata::V4(_) => 4,
-            RuntimeMetadata::V5(_) => 5,
-            RuntimeMetadata::V6(_) => 6,
-            RuntimeMetadata::V7(_) => 7,
-            RuntimeMetadata::V8(_) => 8,
-            RuntimeMetadata::V9(_) => 9,
-            RuntimeMetadata::V10(_) => 10,
-            RuntimeMetadata::V11(_) => 11,
-            RuntimeMetadata::V12(_) => 12,
-            RuntimeMetadata::V13(_) => 13,
-            RuntimeMetadata::V14(_) => 14,
-        }
-    }
+	/// Get the version number of the metadata.
+	pub fn version(&self) -> u32 {
+		match self {
+			RuntimeMetadata::V0(_) => 0,
+			RuntimeMetadata::V1(_) => 1,
+			RuntimeMetadata::V2(_) => 2,
+			RuntimeMetadata::V3(_) => 3,
+			RuntimeMetadata::V4(_) => 4,
+			RuntimeMetadata::V5(_) => 5,
+			RuntimeMetadata::V6(_) => 6,
+			RuntimeMetadata::V7(_) => 7,
+			RuntimeMetadata::V8(_) => 8,
+			RuntimeMetadata::V9(_) => 9,
+			RuntimeMetadata::V10(_) => 10,
+			RuntimeMetadata::V11(_) => 11,
+			RuntimeMetadata::V12(_) => 12,
+			RuntimeMetadata::V13(_) => 13,
+			RuntimeMetadata::V14(_) => 14,
+		}
+	}
 }
 
 /// Stores the encoded `RuntimeMetadata` as raw bytes.
@@ -209,14 +203,14 @@ pub struct OpaqueMetadata(pub Vec<u8>);
 pub enum RuntimeMetadataDeprecated {}
 
 impl Encode for RuntimeMetadataDeprecated {
-    fn encode_to<W: Output + ?Sized>(&self, _dest: &mut W) {}
+	fn encode_to<W: Output + ?Sized>(&self, _dest: &mut W) {}
 }
 
 impl codec::EncodeLike for RuntimeMetadataDeprecated {}
 
 #[cfg(feature = "decode")]
 impl Decode for RuntimeMetadataDeprecated {
-    fn decode<I: Input>(_input: &mut I) -> Result<Self, Error> {
-        Err("Decoding is not supported".into())
-    }
+	fn decode<I: Input>(_input: &mut I) -> Result<Self, Error> {
+		Err("Decoding is not supported".into())
+	}
 }
