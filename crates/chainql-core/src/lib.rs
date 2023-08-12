@@ -1185,7 +1185,23 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 		.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_decode {
 			reg
 		})))))?;
-	Ok(obj.build())
+	let preload_keys = simple_thunk! {
+		let pending_out: Pending<ObjValue> = pending_out.clone();
+		let client: Client = client.clone();
+		Thunk::<Val>::evaluated({
+			eprintln!("preloading all keys");
+			let keys = client.get_keys(&[]).map_err(client_error)?;
+			client.preload_storage(keys.iter().collect::<Vec<_>>().as_slice()).map_err(client_error)?;
+			eprintln!("not loaded");
+			Val::Obj(pending_out.unwrap())
+		})
+	};
+	out.member("_preloadKeys".into())
+		.hide()
+		.thunk(preload_keys)?;
+	let out = out.build();
+	pending_out.fill(out.clone());
+	Ok(out)
 }
 
 /// Create a Jsonnet object of a blockchain block.

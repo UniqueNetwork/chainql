@@ -5,17 +5,10 @@
 // ### Args
 // - `chainUrl`: the URL of the chain to pull data from.
 //
-// ### Usage 
+// ### Usage
 // `chainql --tla-str=chainUrl=ws://localhost:9944 readableDump.jsonnet > dump.json`
 
 function(chainUrl)
 
   local state = cql.chain(chainUrl).latest;
-  {
-    // Iterate over every pallet and every storage in those pallets, and dump the contents into a JSON object
-    [palletName]: local pallet = state[palletName]; {
-      [storage]: if std.isObject(pallet[storage]) && std.objectHasEx(pallet[storage], '_preloadKeys', true) then pallet[storage]._preloadKeys else pallet[storage]
-      for storage in std.objectFields(pallet)
-    }
-    for palletName in std.objectFields(state)
-  }
+  state._preloadKeys
