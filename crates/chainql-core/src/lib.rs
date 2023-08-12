@@ -1215,6 +1215,9 @@ fn builtin_ed25519_seed(v: IStr) -> Result<Hex> {
 	Ok(Hex(public.as_slice().into()))
 }
 
+#[builtin]
+fn builtin_description(description: IStr, value: Thunk<Val>) -> Result<Val> {
+	value.evaluate().description(&description)
 }
 
 /// Create a Jsonnet object of a blockchain block.
@@ -1509,6 +1512,8 @@ pub fn create_cql() -> ObjValue {
 		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(
 			builtin_runtime_wasm::INST,
 		)));
+
+	cql.member("description".into()).hide().value_unchecked(Val::Func(FuncVal::StaticBuiltin(builtin_description::INST)));
 
 	cql.build()
 }
