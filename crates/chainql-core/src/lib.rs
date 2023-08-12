@@ -7,18 +7,21 @@ use std::{
 
 use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
 use frame_metadata::{
-	PalletMetadata, RuntimeMetadataV14, StorageEntryModifier, StorageEntryType, StorageHasher,
+	PalletMetadata, RuntimeMetadata, RuntimeMetadataPrefixed, RuntimeMetadataV14,
+	StorageEntryModifier, StorageEntryType, StorageHasher,
 };
+use hex::{builtin_from_hex, builtin_to_hex, Hex};
 use jrsonnet_evaluator::{
 	error::{Error as JrError, ErrorKind::RuntimeError, Result},
 	function::{builtin, FuncVal},
 	tb, throw,
-	typed::Typed,
+	typed::{Either2, Typed},
 	val::{ArrValue, StrValue, ThunkValue},
-	ContextInitializer, IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val,
+	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, State, Thunk, Val, ResultExt,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
+use num_traits::FromPrimitive;
 use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
 use rebuild::rebuild;
 use scale_info::{
@@ -29,8 +32,10 @@ use serde::Deserialize;
 use sp_core::{
 	blake2_128, blake2_256,
 	crypto::{Ss58AddressFormat, Ss58Codec},
+	storage::StateVersion,
 	twox_128, twox_256, twox_64, ByteArray, Pair, U256,
 };
+use sp_io::trie::blake2_256_root;
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
 mod client;
@@ -1436,18 +1441,18 @@ fn builtin_full_dump(data: BTreeMap<Hex, Hex>, opts: Option<ChainOpts>) -> Resul
 	builtin_dump(Either2::B(Hex(meta)), data, opts)
 }
 
-/// Convert a hex string to a vector of bytes.
-///
-/// This function is passed to Jsonnet and is callable from the code.
-///
-/// # Example
-///
-/// ```
-/// cql.fromHex("0x00000002103ec801") == [0, 0, 0, 2, 16, 62, 200, 1]
-/// ```
 #[builtin]
-fn builtin_from_hex(data: IStr) -> Result<Vec<u8>> {
-	from_hex(&data)
+fn builtin_blake2_256_root(tree: BTreeMap<Hex, Hex>, state_version: u8) -> Result<Hex> {
+	let state_version = match state_version {
+		0 => StateVersion::V0,
+		1 => StateVersion::V1,
+		_ => throw!("unknown state version"),
+	};
+	let pairs = tree
+		.into_iter()
+		.map(|(k, v)| (k.0, v.0))
+		.collect::<Vec<_>>();
+	Ok(Hex(blake2_256_root(pairs, state_version).as_bytes().into()))
 }
 
 pub fn create_cql() -> ObjValue {
@@ -1493,6 +1498,11 @@ pub fn create_cql() -> ObjValue {
 			builtin_twox128_of_string::INST,
 		)));
 
+	cql.member("blake2_256Root".into())
+		.hide()
+		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(
+			builtin_blake2_256_root::INST,
+		)));
 
 	cql.member("runtimeWasm".into())
 		.hide()
