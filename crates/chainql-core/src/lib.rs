@@ -30,8 +30,12 @@ use sp_core::{
 	crypto::{Ss58AddressFormat, Ss58Codec},
 	twox_128, twox_256, twox_64, ByteArray, Pair, U256,
 };
+use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
 mod client;
+pub mod hex;
+pub mod rebuild;
+pub mod wasm;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
@@ -1362,6 +1366,13 @@ pub fn create_cql() -> ObjValue {
 		.hide()
 		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(
 			builtin_twox128_of_string::INST,
+		)));
+
+
+	cql.member("runtimeWasm".into())
+		.hide()
+		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(
+			builtin_runtime_wasm::INST,
 		)));
 
 	cql.build()

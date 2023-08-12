@@ -1,86 +1,111 @@
+use std::{borrow::Cow, rc::Rc};
+
+use jrsonnet_evaluator::{
+	error::ErrorKind::RuntimeError, function::builtin, typed::Typed, val::ThunkValue, ObjValue,
+	Result, Thunk, Val,
+};
+use jrsonnet_gcmodule::{Cc, Trace};
+use parity_scale_codec::Decode;
+use sc_executor::{RuntimeVersionOf, WasmExecutor};
+use sp_core::traits::{CodeExecutor, RuntimeCode, WrappedRuntimeCode};
+use sp_io::SubstrateHostFunctions;
+
+use crate::Hex;
+
+#[derive(Trace)]
+pub struct RuntimeContainer {
+	#[trace(skip)]
+	code: WrappedRuntimeCode<'static>,
+	#[trace(skip)]
+	executor: WasmExecutor<SubstrateHostFunctions>,
+}
+
+#[derive(Typed)]
+pub struct RuntimeVersion {
+	spec_name: String,
+	spec_version: u32,
+	state_version: u8,
+	transaction_version: u32,
+}
+
+impl RuntimeContainer {
+	pub fn new(code: Vec<u8>) -> Self {
+		Self {
+			code: WrappedRuntimeCode(Cow::Owned(code)),
+			executor: <WasmExecutor<SubstrateHostFunctions>>::builder().build(),
+		}
+	}
+	fn runtime_code(&self) -> RuntimeCode<'_> {
+		RuntimeCode {
+			code_fetcher: &self.code,
+			heap_pages: Some(100),
+			hash: Vec::new(),
+		}
+	}
+	pub fn version(&self) -> Result<RuntimeVersion> {
+		let mut ext = sp_state_machine::BasicExternalities::new_empty();
+		let version =
+			RuntimeVersionOf::runtime_version(&self.executor, &mut ext, &self.runtime_code())
+				.map_err(|e| RuntimeError(format!("{e}").into()))?;
+
+		Ok(RuntimeVersion {
+			spec_name: version.spec_name.to_string(),
+			spec_version: version.spec_version,
+			state_version: version.state_version,
+			transaction_version: version.transaction_version,
+		})
+	}
+	pub fn metadata(&self) -> Result<Vec<u8>> {
+		let mut ext = sp_state_machine::BasicExternalities::new_empty();
+		let (result, _native_used) = self.executor.call(
+			&mut ext,
+			&self.runtime_code(),
+			"Metadata_metadata",
+			&[],
+			false,
+			sp_core::traits::CallContext::Onchain,
+		);
+		let result = result.expect("metadata is implemented for substrate chains");
+		let result = <Vec<u8>>::decode(&mut result.as_slice()).expect("valid output");
+		Ok(result)
+	}
+}
 
 #[builtin]
-fn builtin_wasm(data: IBytes) -> Result<ObjValue> {
-    let engine = wasmtime::Engine::default();
-    let data = sp_maybe_compressed_blob::decompress(
-        data.as_ref(),
-        sp_maybe_compressed_blob::CODE_BLOB_BOMB_LIMIT,
-    )
-    .unwrap();
-    let module = wasmtime::Module::from_binary(&engine, data.as_ref())
-        .map_err(|e| RuntimeError(format!("failed to create module: {e}").into()))?;
-    for ele in module.exports() {
-        dbg!(ele.name(), ele.ty());
-    }
-    for i in module.imports() {
-        dbg!(i.module(),
-        i.name());
-    }
+pub fn builtin_runtime_wasm(data: Hex) -> Result<ObjValue> {
+	let runtime = Cc::new(RuntimeContainer::new(data.0));
 
-    #[derive(Default)]
-    struct StoreData {
-        memory: Option<Memory>,
-        allocated: u32,
-    }
+	#[derive(Trace)]
+	struct RuntimeVersionThunk {
+		runtime: Cc<RuntimeContainer>,
+	}
+	impl ThunkValue for RuntimeVersionThunk {
+		type Output = Val;
+		fn get(self: Box<Self>) -> Result<Val> {
+			RuntimeVersion::into_untyped(self.runtime.version()?)
+		}
+	}
+	#[derive(Trace)]
+	struct MetadataThunk {
+		runtime: Cc<RuntimeContainer>,
+	}
+	impl ThunkValue for MetadataThunk {
+		type Output = Val;
+		fn get(self: Box<Self>) -> Result<Val> {
+			self.runtime.metadata().map(Hex).and_then(Hex::into_untyped)
+		}
+	}
 
-    let mut store = wasmtime::Store::new(&engine, StoreData::default());
-    
-    let mut memory = Memory::new(&mut store, MemoryType::new(21, None)).unwrap();
-    store.data_mut().memory = Some(memory);
+	let mut out = ObjValue::builder();
 
-    let mut instance = <Linker<StoreData>>::new(&engine);
-    instance.func_new(
-        "env",
-        "ext_logging_max_level_version_1",
-        FuncType::new([], [ValType::I32]),
-        |caller, input, output| {
-            output[0] = wasmtime::Val::I32(0);
-            Ok(())
-        },
-    ).unwrap();
-    instance.func_new(
-        "env",
-        "ext_allocator_malloc_version_1",
-        FuncType::new([ValType::I32], [ValType::I32]),
-        |mut caller, input, output| {
-            let size: u32 = input[0].unwrap_i32().try_into().unwrap();
-            let memory = caller.data().memory.unwrap();
-            let allocated = caller.data().allocated;
-            let new_allocated = allocated + size;
-            while memory.data_size(&mut caller) < new_allocated as usize {
-                memory.grow(&mut caller, 1).unwrap();
-            }
-            output[0] = wasmtime::Val::I32(allocated as i32);
-            Ok(())
-        },
-    ).unwrap();
-    // let print_hex = instance.func_new(
-    //     "env",
-    //     "ext_misc_print_utf8_version_1",
-    //     FuncType::new([], []),
-    //     |caller, input, output| {
-    //         Ok(())
-    //     },
-    // ).unwrap();
-    // let print_hex = instance.func_new(
-    //     "env",
-    //     "ext_misc_runtime_version_version_1",
-    //     FuncType::new([], []),
-    //     |caller, input, output| {
-    //         Ok(())
-    //     },
-    // ).unwrap();
-    //
-    instance.define(&mut store, "env", "memory", memory).unwrap();
-    instance.define_unknown_imports_as_traps(&module).unwrap();
-    instance
-        .module(&mut store, "runtime.wasm", &module)
-        .unwrap();
-    let instance = instance.instantiate(&mut store, &module).unwrap();
-    let fun = instance
-        .get_func(&mut store, "UniqueApi_token_data")
-        .unwrap();
-    let mut outputs = [wasmtime::Val::I32(0)];
-    fun.call(&mut store, &[wasmtime::Val::I32(0), wasmtime::Val::I32(0)], &mut outputs).unwrap();
-    todo!()
+	out.member("version".into())
+		.thunk(Thunk::new(RuntimeVersionThunk {
+			runtime: runtime.clone(),
+		}))?;
+	out.member("metadata".into())
+		.thunk(Thunk::new(MetadataThunk {
+			runtime: runtime.clone(),
+		}))?;
+
+	Ok(out.build())
 }
