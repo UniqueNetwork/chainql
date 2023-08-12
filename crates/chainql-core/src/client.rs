@@ -17,10 +17,24 @@ type Result<T, E = Error> = result::Result<T, E>;
 
 pub trait ClientT {
 	fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>>;
+	fn get_unknown_keys(&self, prefix: &[u8], known_prefixes: &[&Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+		let keys = self.get_keys(prefix)?;
+		assert!(
+			known_prefixes.iter().find(|p| p.is_empty()).is_none(),
+			"known prefix can't be empty"
+		);
+		Ok(keys
+			.into_iter()
+			.filter(|key| known_prefixes.iter().all(|known| !key.starts_with(known)))
+			.collect())
+	}
 	fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 	fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()>;
 	fn get_metadata(&self) -> Result<RuntimeMetadataV14>;
 	fn contains_data_for(&self, prefix: &[u8]) -> Result<bool>;
+	fn contains_key(&self, key: &[u8]) -> Result<bool> {
+		Ok(self.get_storage(key)?.is_some())
+	}
 	fn next(&self) -> Result<Client>;
 }
 

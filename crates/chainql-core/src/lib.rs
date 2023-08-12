@@ -589,7 +589,7 @@ fn fetch_decode_key(
 	} else if let Some(default) = default {
 		decode_value(&mut &default[..], &registry, typ, false)?
 	} else {
-		Val::Null
+		unreachable!("unknown keys should not be present")
 	})
 }
 
@@ -929,6 +929,16 @@ fn make_pallet_key(
 			}
 		}
 	}
+	out.member("_unknown".into()).thunk(simple_thunk! {
+		let client: Client = client.clone();
+		let known_prefixes: Vec<Vec<u8>> = known_prefixes;
+		let pallet_key: Vec<u8> = pallet_key.to_vec();
+		// #[trace(skip)]
+		// let meta: RuntimeMetadataV14 = meta;
+		Thunk::<Val>::evaluated({
+			Val::Obj(make_unknown_key(client, &pallet_key, &known_prefixes.iter().collect::<Vec<_>>())?)
+		})
+	})?;
 	out.member("_key".into())
 		.hide()
 		.value(Val::Obj(keyout.build()))?;
@@ -957,14 +967,14 @@ fn fetch_raw(key: Vec<u8>, client: Client) -> Result<Val> {
 		Val::Null
 	})
 }
-
-/// Objectify some chain's storage of all keys in their byte array form.
-fn make_raw_key(client: Client) -> Result<ObjValue> {
+fn make_unknown_key(client: Client, prefix: &[u8], known: &[&Vec<u8>]) -> Result<ObjValue> {
 	let mut out = ObjValueBuilder::new();
 	let pending_out = Pending::<ObjValue>::new();
-	let fetched = client.get_keys(&[]).map_err(client_error)?;
+	let fetched = client
+		.get_unknown_keys(prefix, known)
+		.map_err(client_error)?;
 	for key in fetched.iter().cloned() {
-		let key_str = format!("0x{}", hex::encode(&key));
+		let key_str = hex::to_hex(&key[prefix.len()..]);
 		let value = simple_thunk! {
 			let key: Vec<u8> = key;
 			let client: Client = client.clone();
@@ -1196,11 +1206,28 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 	}
 	let meta = metadata_obj(&meta);
 	obj.member("_meta".into()).hide().value(meta)?;
-	obj.member("_raw".into()).hide().thunk(simple_thunk! {
-		let client: Client = client;
-		Thunk::<Val>::evaluated(Val::Obj(make_raw_key(client)?))
+	out.member("_raw".into()).hide().thunk(simple_thunk! {
+		let client: Client = client.clone();
+		Thunk::<Val>::evaluated(Val::Obj(make_unknown_key(client, &[], &[])?))
 	})?;
 	obj.member("_encode".into())
+	let meta = Rc::new(meta);
+	out.member("_unknown".into()).thunk(simple_thunk! {
+		let client: Client = client.clone();
+		#[trace(skip)]
+		let meta: Rc<RuntimeMetadataV14> = meta.clone();
+		Thunk::<Val>::evaluated({
+			let mut known = Vec::new();
+			for pallet in &meta.pallets {
+				let Some(storage) = &pallet.storage else {
+					continue;
+				};
+				let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
+				known.push(pallet_key.to_vec());
+			}
+			Val::Obj(make_unknown_key(client, &[], &known.iter().collect::<Vec<_>>())?)
+		})
+	})?;
 		.hide()
 		.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode {
 			reg: reg.clone()

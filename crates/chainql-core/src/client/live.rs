@@ -20,6 +20,8 @@ pub enum Error {
 	BlockNotFound(Option<u32>),
 	#[error("block history is not supported")]
 	BlockHistoryNotSupported,
+	#[error("url: {0}")]
+	UrlParse(#[from] http::uri::InvalidUri),
 }
 type Result<T, E = Error> = result::Result<T, E>;
 
@@ -64,12 +66,31 @@ pub struct ClientShared {
 impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
 		let handle = Handle::current();
-
+		let uri: hyper::Uri = url.as_ref().parse()?;
+		let mut uri = uri.into_parts();
+		let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
+		let wss_scheme = http::uri::Scheme::try_from("wss").expect("valid");
+		if uri.scheme == Some(ws_scheme.clone()) || uri.scheme == Some(wss_scheme) {
+			if let Some(authority) = &mut uri.authority {
+				if authority.port().is_none() {
+					*authority = http::uri::Authority::try_from(format!(
+						"{authority}:{}",
+						if uri.scheme == Some(ws_scheme) {
+							9944
+						} else {
+							443
+						}
+					))
+					.expect("valid");
+				}
+			};
+		}
+		let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
 		let client = handle.block_on(
 			jsonrpsee::ws_client::WsClientBuilder::default()
 				.max_request_size(20 * 1024 * 1024)
 				.max_response_size(20 * 1024 * 1024)
-				.build(url),
+				.build(uri.to_string()),
 		)?;
 		Ok(Self {
 			real: Rc::new(client),
@@ -97,7 +118,7 @@ pub struct LiveClient {
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<HashMap<Vec<u8>, Option<Vec<u8>>>>>,
-	fetched_prefixes: Rc<RefCell<Vec<u8>>>,
+	fetched_prefixes: Rc<RefCell<Vec<Vec<u8>>>>,
 	#[trace(skip)]
 	block: Rc<String>,
 }
@@ -105,6 +126,21 @@ impl LiveClient {
 	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
 		eprintln!("loading keys by prefix {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
+
+		if self
+			.fetched_prefixes
+			.borrow()
+			.iter()
+			.any(|v| prefix.starts_with(v))
+		{
+			return Ok(self
+				.key_value_cache
+				.borrow()
+				.keys()
+				.filter(|k| k.starts_with(prefix))
+				.map(|k| k.to_vec())
+				.collect());
+		}
 
 		let handle = Handle::current();
 		let mut fetched = vec![];
@@ -127,6 +163,8 @@ impl LiveClient {
 				break;
 			}
 		}
+
+		self.fetched_prefixes.borrow_mut().push(prefix.to_vec());
 
 		let fetched = fetched
 			.iter()
