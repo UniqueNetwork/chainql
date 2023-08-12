@@ -1377,54 +1377,63 @@ fn builtin_twox128_of_string(data: IStr) -> Result<Hex> {
 /// }, {omit_empty:true})
 /// ```
 #[builtin]
-fn builtin_dump(meta: Val, dump: ObjValue, opts: Option<ChainOpts>) -> Result<ObjValue> {
+fn builtin_dump(
+	meta: Either![ObjValue, Hex],
+	data: BTreeMap<Hex, Hex>,
+	opts: Option<ChainOpts>,
+) -> Result<ObjValue> {
 	let opts = opts.unwrap_or_default();
-	let meta: RuntimeMetadataV14 = serde_json::from_value(
-		serde_json::to_value(meta).map_err(|_| RuntimeError("bad metadata".into()))?,
-	)
-	.unwrap();
-	let mut data = BTreeMap::new();
-	for key in dump.fields(true) {
-		let k = from_hex(&key)?;
-		let v = dump.get(key)?.expect("iterating over fields");
-		let v = v
-			.as_str()
-			.ok_or_else(|| RuntimeError("bad dump data".into()))?;
-		let v = from_hex(&v)?;
-		data.insert(k, v);
+
+	fn types_ordered(r: &PortableRegistry) -> bool {
+		for (i, t) in r.types.iter().enumerate() {
+			if i as u32 != t.id {
+				return false;
+			}
+		}
+		true
 	}
-	make_block(Client::new(ClientDump { meta, data }), opts)
+
+	let mut meta: RuntimeMetadataV14 = match meta {
+		Either2::A(obj) => serde_json::from_value(
+			serde_json::to_value(Val::Obj(obj))
+				.map_err(|e| RuntimeError(format!("bad metadata: {e}").into()))?,
+		)
+		.map_err(|e| RuntimeError(format!("bad metadata: {e}").into()))?,
+		Either2::B(meta) => {
+			match RuntimeMetadataPrefixed::decode(&mut meta.0.as_slice())
+				.map_err(|e| RuntimeError(format!("bad metadata: {e}").into()))?
+				.1
+			{
+				RuntimeMetadata::V14(meta) => meta,
+				_ => throw!("unknown metadata version"),
+			}
+		}
+	};
+
+	if !types_ordered(&meta.types) {
+		meta.types.types.sort_by_key(|t| t.id);
+		if !types_ordered(&meta.types) {
+			throw!("there are gaps in portable registry data")
+		}
+	}
+
+	make_block(
+		Client::new(ClientDump {
+			meta,
+			data: data.into_iter().map(|(k, v)| (k.0, v.0)).collect(),
+		}),
+		opts,
+	)
 }
 
-/// Convert an array of bytes to a hex string.
-fn to_hex(data: &[u8]) -> String {
-	let mut out = vec![0; data.len() * 2 + 2];
-	out[0] = b'0';
-	out[1] = b'x';
-	hex::encode_to_slice(data, &mut out[2..]).expect("size is correct");
-	String::from_utf8(out).expect("hex is utf-8 compatible")
-}
-
-/// Convert an array of bytes to a hex string.
-///
-/// This function is passed to Jsonnet and is callable from the code.
-///
-/// # Example
-///
-/// ```
-/// cql.toHex([0, 0, 0, 2, 16, 62, 200, 1]) == "0x00000002103ec801"
-/// ```
 #[builtin]
-fn builtin_to_hex(data: Vec<u8>) -> Result<String> {
-	Ok(to_hex(&data))
-}
-
-/// Convert a hex string to a vector of bytes.
-fn from_hex(data: &str) -> Result<Vec<u8>> {
-	ensure!(data.starts_with("0x"), "string doesn't starts with 0x");
-	let out =
-		hex::decode(&data.as_bytes()[2..]).map_err(|e| anyhow!("failed to decode hex: {e}"))?;
-	Ok(out)
+fn builtin_full_dump(data: BTreeMap<Hex, Hex>, opts: Option<ChainOpts>) -> Result<ObjValue> {
+	let Some(code) = data.get(&Hex::encode_str(":code")) else {
+		throw!("there is no code stored in the provided dump");
+	};
+	let runtime = RuntimeContainer::new(code.0.clone());
+	let meta = runtime.metadata()?;
+	builtin_dump(Either2::B(Hex(meta)), data, opts)
 }
 
 /// Convert a hex string to a vector of bytes.
@@ -1450,6 +1459,9 @@ pub fn create_cql() -> ObjValue {
 	cql.member("dump".into())
 		.hide()
 		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(builtin_dump::INST)));
+	cql.member("fullDump".into())
+		.hide()
+		.value_unchecked(Val::Func(FuncVal::StaticBuiltin(builtin_full_dump::INST)));
 
 	cql.member("toHex".into())
 		.hide()
