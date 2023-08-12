@@ -236,7 +236,9 @@ where
 {
 	let v = match v {
 		Val::BigInt(n) => (*n).clone(),
-		_ => throw!("unexpected type: {}", v.value_type()),
+		Val::Str(v) => BigInt::from_str(&v.to_string())
+			.map_err(|e| RuntimeError(format!("bigint parse: {e}").into()))?,
+		_ => throw!("unexpected type for bigint decoder: {}", v.value_type()),
 	};
 	Ok(v.to_string()
 		.parse()
