@@ -20,6 +20,7 @@ use jrsonnet_evaluator::{
 use jrsonnet_gcmodule::{Cc, Trace};
 use num_bigint::BigInt;
 use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
+use rebuild::rebuild;
 use scale_info::{
 	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
 	TypeDefPrimitive,
@@ -76,18 +77,20 @@ macro_rules! simple_thunk {
 }
 
 /// Return an Err from a formatted string if the condition is not met.
+#[macro_export]
 macro_rules! ensure {
     ($cond:expr, $($tt:tt)+) => {
         if !($cond) {
-            throw!($($tt)+)
+            jrsonnet_evaluator::throw!($($tt)+)
         }
     };
 }
 
 /// Format a string and transform it into an error.
+#[macro_export]
 macro_rules! anyhow {
     ($($tt:tt)+) => {
-        JrError::from(jrsonnet_evaluator::error::ErrorKind::RuntimeError(format!($($tt)+).into()))
+        jrsonnet_evaluator::error::Error::from(jrsonnet_evaluator::error::ErrorKind::RuntimeError(format!($($tt)+).into()))
     };
 }
 
@@ -814,139 +817,128 @@ fn make_pallet_key(
 	let mut encode_valueout = ObjValueBuilder::new();
 	let mut decode_valueout = ObjValueBuilder::new();
 	let mut key_args = ObjValueBuilder::new();
-	if let Some(storage) = data.storage {
-		let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
-		for entry in storage.entries {
-			let key_key = sp_core::twox_128(entry.name.as_bytes());
-			let mut entry_key = vec![];
-			entry_key.extend_from_slice(&pallet_key);
-			entry_key.extend_from_slice(&key_key);
-			if opts.omit_empty && !client.contains_data_for(&entry_key).map_err(client_error)? {
-				continue;
+	let Some(storage) = data.storage else {
+		unreachable!("pallets with no storage are not added to the state map");
+	};
+	let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
+	let mut known_prefixes = Vec::new();
+	for entry in storage.entries {
+		let key_key = sp_core::twox_128(entry.name.as_bytes());
+		let mut entry_key = vec![];
+		entry_key.extend_from_slice(&pallet_key);
+		entry_key.extend_from_slice(&key_key);
+		known_prefixes.push(entry_key.clone());
+		if opts.omit_empty && !client.contains_data_for(&entry_key).map_err(client_error)? {
+			continue;
+		}
+		let default = match entry.modifier {
+			StorageEntryModifier::Optional => None,
+			StorageEntryModifier::Default => Some(entry.default),
+		};
+		keyout
+			.member(entry.name.clone().into())
+			.value(Hex::into_untyped(Hex(entry_key.clone()))?)?;
+		match entry.ty {
+			StorageEntryType::Plain(v) => {
+				encode_keyout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_encode_key {
+							reg: registry.clone(),
+							prefix: Rc::new(entry_key.clone()),
+							key: Key(vec![])
+						}
+					)))))?;
+				encode_valueout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_encode_value {
+							reg: registry.clone(),
+							ty: ValueId(v),
+						}
+					)))))?;
+				decode_valueout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_decode_value {
+							reg: registry.clone(),
+							ty: ValueId(v),
+						}
+					)))))?;
+
+				let should_have_entry = 
+					// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+					opts.include_defaults && default.is_some() || 
+					client.contains_key(&entry_key).map_err(client_error)?;
+				if !should_have_entry {
+					continue;
+				}
+
+				out.member(entry.name.clone().into()).thunk(simple_thunk! {
+					let entry_key: Vec<u8> = entry_key;
+					let client: Client = client.clone();
+					#[trace(skip)]
+					let v: UntrackedSymbol<TypeId> = v;
+					let default: Option<Vec<u8>> = default;
+					let registry: Rc<PortableRegistry> = registry.clone();
+					Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, v, default)?)
+				})?;
 			}
-			let default = match entry.modifier {
-				StorageEntryModifier::Optional => None,
-				StorageEntryModifier::Default => Some(entry.default),
-			};
-			keyout
-				.member(entry.name.clone().into())
-				.value(Val::Str(StrValue::Flat(
-					format!("0x{}", hex::encode(&entry_key)).into(),
-				)))?;
-			match entry.ty {
-				StorageEntryType::Plain(v) => {
-					encode_keyout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_encode_key {
-								reg: registry.clone(),
-								prefix: Rc::new(entry_key.clone()),
-								key: Key(vec![])
-							}
-						)))))?;
-					encode_valueout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_encode_value {
-								reg: registry.clone(),
-								ty: ValueId(v),
-							}
-						)))))?;
-					decode_valueout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_decode_value {
-								reg: registry.clone(),
-								ty: ValueId(v),
-							}
-						)))))?;
-					out.member(entry.name.clone().into()).thunk(simple_thunk! {
-						let entry_key: Vec<u8> = entry_key;
-						let client: Client = client.clone();
-						#[trace(skip)]
-						let v: UntrackedSymbol<TypeId> = v;
-						let default: Option<Vec<u8>> = default;
-						let registry: Rc<PortableRegistry> = registry.clone();
-						Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, v, default)?)
-					})?;
-				}
-				StorageEntryType::Map {
-					hashers,
-					key,
-					value,
-				} => {
-					let tuple = registry.resolve(key.id).expect("key tuple");
-					let fields: Vec<_> = match &tuple.type_def {
-						TypeDef::Composite(t) => t.fields.iter().map(|f| f.ty).collect(),
-						TypeDef::Tuple(t) if hashers.len() != 1 => t.fields.to_vec(),
-						_ => [key].into_iter().collect(),
-					};
+			StorageEntryType::Map {
+				hashers,
+				key,
+				value,
+			} => {
+				let keys = normalize_storage_map_keys(&registry, key, &hashers)?;
+				encode_keyout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_encode_key {
+							reg: registry.clone(),
+							prefix: Rc::new(entry_key.clone()),
+							key: Key(keys.clone())
+						}
+					)))))?;
+				encode_valueout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_encode_value {
+							reg: registry.clone(),
+							ty: ValueId(value),
+						}
+					)))))?;
+				decode_valueout
+					.member(entry.name.clone().into())
+					.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
+						builtin_decode_value {
+							reg: registry.clone(),
+							ty: ValueId(value),
+						}
+					)))))?;
+				key_args
+					.member(entry.name.clone().into())
+					.value(Val::Num(keys.len() as f64))?;
 
-					let keys = if hashers.len() == 1 {
-						vec![(hashers[0].clone(), key)]
-					} else {
-						ensure!(
-							hashers.len() == fields.len(),
-							"bad tuple: {:?} {:?} {}-{}",
-							hashers,
-							tuple.type_def,
-							storage.prefix,
-							entry.name,
-						);
-
-						hashers
-							.into_iter()
-							.zip(fields.iter().copied())
-							.collect::<Vec<(_, _)>>()
-					};
-					encode_keyout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_encode_key {
-								reg: registry.clone(),
-								prefix: Rc::new(entry_key.clone()),
-								key: Key(keys.clone())
-							}
-						)))))?;
-					encode_valueout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_encode_value {
-								reg: registry.clone(),
-								ty: ValueId(value),
-							}
-						)))))?;
-					decode_valueout
-						.member(entry.name.clone().into())
-						.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(
-							builtin_decode_value {
-								reg: registry.clone(),
-								ty: ValueId(value),
-							}
-						)))))?;
-					key_args
-						.member(entry.name.clone().into())
-						.value(Val::Num(keys.len() as f64))?;
-
-					out.member(entry.name.clone().into()).thunk(simple_thunk! {
-						let entry_key: Vec<u8> = entry_key;
-						let client: Client = client.clone();
-						#[trace(skip)]
-						let value: UntrackedSymbol<TypeId> = value;
-						let default: Option<Vec<u8>> = default;
-						let registry: Rc<PortableRegistry> = registry.clone();
-						#[trace(skip)]
-						let keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)> = keys;
-						Thunk::<Val>::evaluated(make_fetch_keys_storage(
-							client,
-							entry_key,
-							registry,
-							keys,
-							value,
-							default,
-						)?)
-					})?;
-				}
+				out.member(entry.name.clone().into()).thunk(simple_thunk! {
+					let entry_key: Vec<u8> = entry_key;
+					let client: Client = client.clone();
+					#[trace(skip)]
+					let value: UntrackedSymbol<TypeId> = value;
+					let default: Option<Vec<u8>> = default;
+					let registry: Rc<PortableRegistry> = registry.clone();
+					#[trace(skip)]
+					let keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)> = keys;
+					let opts: ChainOpts = opts;
+					Thunk::<Val>::evaluated(make_fetch_keys_storage(
+						client,
+						entry_key,
+						registry,
+						keys,
+						value,
+						default,
+						opts,
+					)?)
+				})?;
 			}
 		}
 	}
@@ -976,6 +968,13 @@ fn make_pallet_key(
 		.hide()
 		.value(Val::Obj(key_args.build()))?;
 	Ok(out.build())
+}
+
+#[builtin(fields(
+	meta: Rc<RuntimeMetadataV14>,
+))]
+fn builtin_rebuild(this: &builtin_rebuild, data: ObjValue) -> Result<BTreeMap<Hex, Hex>> {
+	rebuild(data, &this.meta)
 }
 
 /// Get some value under a key in client's storage as a byte array value.
@@ -1052,46 +1051,60 @@ fn builtin_encode_key(
 
 	let mut out = this.prefix.as_slice().to_owned();
 
-	'key: for ((h, t), k) in key.0.iter().zip(keyi.iter()) {
-		let mut ko = vec![];
-
-		if from_string {
-			'fs: {
-				let size = match h {
-					StorageHasher::Blake2_128 => 128 / 8,
-					StorageHasher::Blake2_256 => 256 / 8,
-					StorageHasher::Twox128 => 128 / 8,
-					StorageHasher::Twox256 => 256 / 8,
-					_ => break 'fs,
-				};
-
-				let Some(str) = k.as_str() else {
-                    break 'fs;
-                };
-
-				if str.len() != size + 2 && !str.starts_with("0x") {
-					break 'fs;
-				}
-				let hex = from_hex(&str)?;
-				out.extend_from_slice(&hex);
-				continue 'key;
-			}
-		}
-
-		encode_value(&reg, *t, false, k.clone(), &mut ko, from_string)?;
-		let kh = match h {
-			StorageHasher::Blake2_128 => blake2_128(&ko).to_vec(),
-			StorageHasher::Blake2_256 => blake2_256(&ko).to_vec(),
-			StorageHasher::Blake2_128Concat => [blake2_128(&ko).to_vec(), ko].concat(),
-			StorageHasher::Twox128 => twox_128(&ko).to_vec(),
-			StorageHasher::Twox256 => twox_256(&ko).to_vec(),
-			StorageHasher::Twox64Concat => [twox_64(&ko).to_vec(), ko].concat(),
-			StorageHasher::Identity => ko,
-		};
-		out.extend(&kh);
+	for ((h, t), k) in key.0.iter().zip(keyi.into_iter()) {
+		encode_single_key(&reg, h.clone(), *t, k, &mut out, from_string)?;
 	}
 
-	Ok(to_hex(&out))
+	Ok(Hex(out))
+}
+
+fn encode_single_key(
+	reg: &PortableRegistry,
+	hasher: StorageHasher,
+	ty: UntrackedSymbol<TypeId>,
+	value: Val,
+	out: &mut Vec<u8>,
+	from_string: bool,
+) -> Result<()> {
+	if from_string {
+		'fs: {
+			let size = match hasher {
+				StorageHasher::Blake2_128 => 128 / 8,
+				StorageHasher::Blake2_256 => 256 / 8,
+				StorageHasher::Twox128 => 128 / 8,
+				StorageHasher::Twox256 => 256 / 8,
+				_ => break 'fs,
+			};
+
+			let Some(str) = value.as_str() else {
+				throw!("key from string encoding with non-concat hasher only accepts hash string");
+			};
+
+			if str.len() != size + 2 && !str.starts_with("0x") {
+				throw!("key from string encoding with non-concat hasher only accepts hash string");
+			}
+			let hex = hex::from_hex(&str)?;
+			out.extend_from_slice(&hex);
+			return Ok(());
+		}
+	}
+
+	let mut encoded_key = vec![];
+	encode_value(&reg, ty, false, value, &mut encoded_key, from_string)?;
+	let (hash, concat) = match hasher {
+		StorageHasher::Blake2_128 => (blake2_128(&encoded_key).to_vec(), false),
+		StorageHasher::Blake2_256 => (blake2_256(&encoded_key).to_vec(), false),
+		StorageHasher::Blake2_128Concat => (blake2_128(&encoded_key).to_vec(), true),
+		StorageHasher::Twox128 => (twox_128(&encoded_key).to_vec(), false),
+		StorageHasher::Twox256 => (twox_256(&encoded_key).to_vec(), false),
+		StorageHasher::Twox64Concat => (twox_64(&encoded_key).to_vec(), true),
+		StorageHasher::Identity => (vec![], true),
+	};
+	out.extend(&hash);
+	if concat {
+		out.extend(&encoded_key);
+	}
+	Ok(())
 }
 
 /// Traceable wrapper of an [`UntrackedSymbol`].
@@ -1199,7 +1212,8 @@ fn builtin_ed25519_seed(v: IStr) -> Result<Hex> {
 
 /// Create a Jsonnet object of a blockchain block.
 fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
-	let mut obj = ObjValueBuilder::new();
+	let mut out = ObjValueBuilder::new();
+	let pending_out = Pending::<ObjValue>::new();
 	let meta = client.get_metadata().map_err(client_error)?;
 	let reg = Rc::new(meta.types.clone());
 	for pallet in &meta.pallets {
@@ -1225,13 +1239,12 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 				Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(client, pallet, reg, opts)?))
 			})?;
 	}
-	let meta = metadata_obj(&meta);
-	obj.member("_meta".into()).hide().value(meta)?;
 	out.member("_raw".into()).hide().thunk(simple_thunk! {
 		let client: Client = client.clone();
 		Thunk::<Val>::evaluated(Val::Obj(make_unknown_key(client, &[], &[])?))
 	})?;
-	obj.member("_encode".into())
+	let meta_key = metadata_obj(&meta);
+	out.member("_meta".into()).hide().value(meta_key)?;
 	let meta = Rc::new(meta);
 	out.member("_unknown".into()).thunk(simple_thunk! {
 		let client: Client = client.clone();
@@ -1249,15 +1262,22 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 			Val::Obj(make_unknown_key(client, &[], &known.iter().collect::<Vec<_>>())?)
 		})
 	})?;
+	out.member("_encode".into())
 		.hide()
 		.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_encode {
 			reg: reg.clone()
 		})))))?;
-	obj.member("_decode".into())
+	out.member("_decode".into())
 		.hide()
 		.value(Val::Func(FuncVal::Builtin(Cc::new(tb!(builtin_decode {
 			reg
 		})))))?;
+	out.member("_rebuild".into())
+		.hide()
+		.value(Val::Func(FuncVal::builtin(builtin_rebuild {
+			meta: meta.clone(),
+		})))?;
+
 	let preload_keys = simple_thunk! {
 		let pending_out: Pending<ObjValue> = pending_out.clone();
 		let client: Client = client.clone();
@@ -1495,4 +1515,35 @@ impl ContextInitializer for CqlContextInitializer {
 	fn as_any(&self) -> &dyn std::any::Any {
 		self
 	}
+}
+
+pub fn normalize_storage_map_keys(
+	registry: &PortableRegistry,
+	key: UntrackedSymbol<TypeId>,
+	hashers: &[StorageHasher],
+) -> Result<Vec<(StorageHasher, UntrackedSymbol<TypeId>)>> {
+	let tuple = registry.resolve(key.id).expect("key tuple");
+	let fields: Vec<_> = match &tuple.type_def {
+		TypeDef::Composite(t) => t.fields.iter().map(|f| f.ty).collect(),
+		TypeDef::Tuple(t) if hashers.len() != 1 => t.fields.to_vec(),
+		_ => [key.clone()].into_iter().collect(),
+	};
+
+	let keys = if hashers.len() == 1 {
+		vec![(hashers[0].clone(), key.clone())]
+	} else {
+		ensure!(
+			hashers.len() == fields.len(),
+			"bad tuple: {:?} {:?}",
+			hashers,
+			tuple.type_def,
+		);
+
+		hashers
+			.into_iter()
+			.cloned()
+			.zip(fields.iter().copied())
+			.collect::<Vec<(_, _)>>()
+	};
+	Ok(keys)
 }
