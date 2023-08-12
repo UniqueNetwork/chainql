@@ -299,8 +299,7 @@ where
 					.type_def,
 				TypeDef::Primitive(TypeDefPrimitive::U8)
 			) {
-				let v = String::from_untyped(val)?;
-				let raw = from_hex(&v)?;
+				let raw = Hex::from_untyped(val)?;
 				raw.encode_to(out);
 				return Ok(());
 			}
@@ -318,15 +317,14 @@ where
 					.type_def,
 				TypeDef::Primitive(TypeDefPrimitive::U8)
 			) {
-				let v = String::from_untyped(val)?;
-				let raw = from_hex(&v)?;
+				let raw = Hex::from_untyped(val)?;
 				ensure!(
 					e.len as usize == raw.len(),
 					"array has wrong number for elements, expected {}, got {}",
 					e.len,
 					raw.len()
 				);
-				for i in raw {
+				for i in &*raw {
 					i.encode_to(out);
 				}
 				return Ok(());
@@ -470,13 +468,7 @@ where
 					TypeDef::Primitive(TypeDefPrimitive::U8)
 				) {
 					let raw = <Vec<u8>>::decode(dec).map_err(codec_error)?;
-					let mut out = vec![0; raw.len() * 2 + 2];
-					out[0] = b'0';
-					out[1] = b'x';
-					hex::encode_to_slice(&raw, &mut out[2..]).expect("size is enough");
-					return Ok(Val::Str(StrValue::Flat(
-						String::from_utf8(out).expect("correct utf8").into(),
-					)));
+					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
 
 				let mut out = vec![];
@@ -496,13 +488,7 @@ where
 					for v in raw.iter_mut() {
 						*v = u8::decode(dec).expect("byte");
 					}
-					let mut out = vec![0; raw.len() * 2 + 2];
-					out[0] = b'0';
-					out[1] = b'x';
-					hex::encode_to_slice(&raw, &mut out[2..]).expect("size is enough");
-					return Ok(Val::Str(StrValue::Flat(
-						String::from_utf8(out).expect("utf8").into(),
-					)));
+					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
 
 				let mut out = vec![];
@@ -674,7 +660,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			let mut bytes = vec![0u8; e];
 			bytes.copy_from_slice(&key[..e]);
 			key = &key[e..];
-			Val::Str(StrValue::Flat(to_hex(&bytes).into()))
+			Hex::into_untyped(Hex(bytes))?
 		} else {
 			decode_value(&mut key, &c.shared.reg, key_ty, false)?
 		};
@@ -695,6 +681,47 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 		keyout.member(value.clone()).value(Val::Str(StrValue::Flat(
 			format!("0x{}", hex::encode(&prefix)).into(),
 		)))?;
+		if c.current_key_depth + 1 == c.shared.keys.len() {
+			// Next value is not submap
+			let should_have_entry = 
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+				c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_key(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		} else {
+			// Submap
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+			let should_have_entry = c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_data_for(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		}
+		keyout
+			.member(value.clone())
+			.value(Hex::into_untyped(Hex(prefix.clone()))?)?;
+
+		if c.current_key_depth + 1 == c.shared.keys.len() {
+			// Next value is not submap
+			let should_have_entry = 
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+				c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_key(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		} else {
+			// Submap
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+			let should_have_entry = c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_data_for(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		}
+>>>>>>> dee733a (fixup hex helper)
 		let c = MapFetcherContext {
 			shared: c.shared.clone(),
 			prefix: Rc::new(prefix),
@@ -924,7 +951,7 @@ fn make_pallet_key(
 fn fetch_raw(key: Vec<u8>, client: Client) -> Result<Val> {
 	let value = client.get_storage(key.as_slice()).map_err(client_error)?;
 	Ok(if let Some(value) = value {
-		Val::Arr(ArrValue::bytes(value.as_slice().into()))
+		Hex::into_untyped(Hex(value))?
 	} else {
 		// Should never occur?
 		Val::Null
@@ -980,7 +1007,7 @@ fn builtin_encode_key(
 	this: &builtin_encode_key,
 	keyi: Vec<Val>,
 	from_string: Option<bool>,
-) -> Result<String> {
+) -> Result<Hex> {
 	let from_string = from_string.unwrap_or(false);
 	let reg = this.reg.clone();
 	let key = this.key.clone();
@@ -1047,12 +1074,12 @@ struct ValueId(#[trace(skip)] UntrackedSymbol<TypeId>);
     reg: Rc<PortableRegistry>,
     ty: ValueId,
 ))]
-fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<String> {
+fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<Hex> {
 	let reg = this.reg.clone();
 
 	let mut out = Vec::new();
 	encode_value(&reg, this.ty.0, false, value, &mut out, false)?;
-	Ok(to_hex(&out))
+	Ok(Hex(out))
 }
 
 /// Decode a [`value`] according to [`ty`], the type number of the calling object's inner registry.
@@ -1062,10 +1089,8 @@ fn builtin_encode_value(this: &builtin_encode_value, value: Val) -> Result<Strin
     reg: Rc<PortableRegistry>,
     ty: ValueId,
 ))]
-fn builtin_decode_value(this: &builtin_decode_value, value: IStr) -> Result<Val> {
-	let value = from_hex(&value)?;
-
-	decode_value(&mut value.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
+fn builtin_decode_value(this: &builtin_decode_value, value: Hex) -> Result<Val> {
+	decode_value(&mut value.0.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
 }
 
 /// Encode the value [`v`] into some type, denoted in the calling object's inner registry by the number [`typ`].
@@ -1074,13 +1099,13 @@ fn builtin_decode_value(this: &builtin_decode_value, value: IStr) -> Result<Val>
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
-fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<String> {
+fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<Hex> {
 	let typ = Compact(typ).encode();
 	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
 	let mut out = Vec::new();
 	encode_value(&this.reg, sym, false, v, &mut out, false)?;
 
-	Ok(to_hex(&out))
+	Ok(Hex(out))
 }
 
 /// Decode the value [`v`] according to [`typ`], the type number of the calling object's inner registry.
@@ -1089,12 +1114,11 @@ fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<String> {
 #[builtin(fields(
     reg: Rc<PortableRegistry>,
 ))]
-fn builtin_decode(this: &builtin_decode, typ: u32, v: IStr) -> Result<Val> {
-	let v = from_hex(&v)?;
+fn builtin_decode(this: &builtin_decode, typ: u32, v: Hex) -> Result<Val> {
 	let typ = Compact(typ).encode();
 	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
 
-	decode_value(&mut v.as_slice(), &this.reg, sym, false).map(Val::from)
+	decode_value(&mut v.0.as_slice(), &this.reg, sym, false).map(Val::from)
 }
 
 /// Convert an address from SS58 to a hex string.
@@ -1108,14 +1132,13 @@ fn builtin_decode(this: &builtin_decode, typ: u32, v: IStr) -> Result<Val> {
 ///     "0x864481616c4bd8689a578cb28e1da470f7b819d6b6df8f4d65b50aba8f996508"
 /// ```
 #[builtin]
-fn builtin_ss58(v: IStr) -> Result<IStr> {
+fn builtin_ss58(v: IStr) -> Result<Hex> {
 	let s = sp_core::crypto::AccountId32::from_string(&v)
 		.map_err(|e| RuntimeError(format!("wrong ss58: {e}").into()))?;
-	Ok(to_hex(s.as_ref()).into())
+	Ok(Hex(s.as_slice().into()))
 }
 #[builtin]
-fn builtin_ss58_encode(v: IStr, format: Option<u16>) -> Result<IStr> {
-	let raw = from_hex(&v)?;
+fn builtin_ss58_encode(raw: Hex, format: Option<u16>) -> Result<IStr> {
 	let s = sp_core::crypto::AccountId32::from_slice(&raw)
 		.map_err(|()| RuntimeError("bad accountid32 length".into()))?;
 	let out = s.to_ss58check_with_version(
@@ -1127,18 +1150,20 @@ fn builtin_ss58_encode(v: IStr, format: Option<u16>) -> Result<IStr> {
 }
 
 #[builtin]
-fn builtin_sr25519_seed(v: IStr) -> Result<IStr> {
+fn builtin_sr25519_seed(v: IStr) -> Result<Hex> {
 	let s = sp_core::sr25519::Pair::from_string_with_seed(v.as_str(), None)
 		.map_err(|e| RuntimeError(format!("invalid seed: {e:?}").into()))?;
 	let public = s.0.public();
-	Ok(to_hex(&public).into())
+	Ok(Hex(public.as_slice().into()))
 }
 #[builtin]
-fn builtin_ed25519_seed(v: IStr) -> Result<IStr> {
+fn builtin_ed25519_seed(v: IStr) -> Result<Hex> {
 	let s = sp_core::ed25519::Pair::from_string_with_seed(v.as_str(), None)
 		.map_err(|e| RuntimeError(format!("invalid seed: {e:?}").into()))?;
 	let public = s.0.public();
-	Ok(to_hex(&public).into())
+	Ok(Hex(public.as_slice().into()))
+}
+
 }
 
 /// Create a Jsonnet object of a blockchain block.
@@ -1159,7 +1184,7 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 				continue;
 			}
 		}
-		obj.member(pallet.name.clone().into())
+		out.member(pallet.name.clone().into())
 			.thunk(simple_thunk! {
 				let client: Client = client.clone();
 				#[trace(skip)]
@@ -1261,9 +1286,9 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 }
 
 #[builtin]
-fn builtin_twox128_of_string(data: IStr) -> Result<IStr> {
+fn builtin_twox128_of_string(data: IStr) -> Result<Hex> {
 	let data = sp_core::twox_128(data.as_bytes());
-	Ok(to_hex(&data).into())
+	Ok(Hex(data.into()))
 }
 
 /// Create a mock block Jsonnet object from some parsed data dump.
