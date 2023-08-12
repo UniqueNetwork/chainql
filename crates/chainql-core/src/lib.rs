@@ -601,6 +601,7 @@ struct SharedMapFetcherContext {
 	keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)>,
 	value_typ: UntrackedSymbol<TypeId>,
 	value_default: Option<Vec<u8>>,
+	opts: ChainOpts,
 }
 
 /// Contains smart pointers to shared data to be accessed by entries' thunks, together with the pointer to own latest key depth.
@@ -681,6 +682,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 		keyout.member(value.clone()).value(Val::Str(StrValue::Flat(
 			format!("0x{}", hex::encode(&prefix)).into(),
 		)))?;
+<<<<<<< HEAD
 		if c.current_key_depth + 1 == c.shared.keys.len() {
 			// Next value is not submap
 			let should_have_entry = 
@@ -721,7 +723,24 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 				continue;
 			}
 		}
->>>>>>> dee733a (fixup hex helper)
+		if c.current_key_depth + 1 == c.shared.keys.len() {
+			// Next value is not submap
+			let should_have_entry = 
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+				c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_key(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		} else {
+			// Submap
+				// Optional values have no map entry by convention, so we skip this key even when !include_defaults
+			let should_have_entry = c.shared.opts.include_defaults &&c.shared.value_default.is_some() ||
+				c.shared.client.contains_data_for(&prefix).map_err(client_error)?;
+			if !should_have_entry {
+				continue;
+			}
+		}
 		let c = MapFetcherContext {
 			shared: c.shared.clone(),
 			prefix: Rc::new(prefix),
@@ -764,6 +783,7 @@ fn make_fetch_keys_storage(
 	keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)>,
 	value_typ: UntrackedSymbol<TypeId>,
 	value_default: Option<Vec<u8>>,
+	opts: ChainOpts,
 ) -> Result<Val> {
 	let fetched = client.get_keys(prefix.as_slice()).map_err(client_error)?;
 	make_fetched_keys_storage(MapFetcherContext {
@@ -774,6 +794,7 @@ fn make_fetch_keys_storage(
 			keys,
 			value_typ,
 			value_default,
+			opts,
 		}),
 		prefix: Rc::new(prefix),
 		current_key_depth: 0,
@@ -1182,10 +1203,10 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 	let meta = client.get_metadata().map_err(client_error)?;
 	let reg = Rc::new(meta.types.clone());
 	for pallet in &meta.pallets {
+		let Some(storage) = &pallet.storage else {
+			continue;
+		};
 		if opts.omit_empty {
-			let Some(storage) = &pallet.storage else {
-                continue;
-            };
 			let pallet_key = sp_core::twox_128(storage.prefix.as_bytes());
 			if !client
 				.contains_data_for(&pallet_key)
@@ -1278,8 +1299,10 @@ fn chain_block(this: &chain_block, block: u32) -> Result<ObjValue> {
 /// Selection of optional flags for chain data processing.
 #[derive(Typed, Trace, Default, Clone, Copy)]
 struct ChainOpts {
-	/// Whether or not to ignore empty fields.
+	/// Whether or not to ignore trie prefixes with no keys
 	omit_empty: bool,
+	/// Should default values be included in output
+	include_defaults: bool,
 }
 
 /// Get chain data from a URL, including queryable storage, metadata, and blocks.
