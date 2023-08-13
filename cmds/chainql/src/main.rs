@@ -3,9 +3,7 @@ use std::{io::Read, process};
 use chainql_core::create_cql;
 use clap::Parser;
 use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
-use jrsonnet_evaluator::{
-	apply_tla, error::Result, manifest::JsonFormat, throw, State, Thunk, Val,
-};
+use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State, Thunk, Val};
 use tokio::runtime::Handle;
 
 /// chainql
@@ -56,7 +54,7 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
 		let res = if let Some(str) = res.as_str() {
 			str.as_str().to_owned()
 		} else {
-			throw!("expected string as output")
+			bail!("expected string as output")
 		};
 		res
 	} else {

@@ -4,8 +4,7 @@ use frame_metadata::{
 	PalletStorageMetadata, RuntimeMetadataV14, StorageEntryMetadata, StorageEntryType,
 	StorageHasher,
 };
-use jrsonnet_evaluator::{throw, typed::Typed, ObjValue, Result, ResultExt, Val};
-use sc_executor::sp_wasm_interface::anyhow::Context;
+use jrsonnet_evaluator::{bail, typed::Typed, ObjValue, Result, ResultExt, Val};
 use scale_info::{form::PortableForm, interner::UntrackedSymbol, PortableRegistry};
 use sp_core::twox_128;
 
@@ -64,10 +63,10 @@ fn rebuild_inner(
 			continue;
 		}
 		let Some(pallet) = meta.pallets.iter().find(|p| p.name == key.as_str()) else {
-			throw!("unknown pallet: {key}");
+			bail!("unknown pallet: {key}");
 		};
 		let Some(storage) = &pallet.storage else {
-			throw!("pallet has no storage, yet was passed to rebuild: {key}");
+			bail!("pallet has no storage, yet was passed to rebuild: {key}");
 		};
 		let pallet_prefix = twox_128(storage.prefix.as_bytes());
 
@@ -83,7 +82,7 @@ fn rebuild_inner(
 		let map = <BTreeMap<Hex, Hex>>::from_untyped(unknown)?;
 		for (k, v) in map {
 			if handled_prefixes.iter().any(|p| k.0.starts_with(p)) {
-				throw!("unknown key starts with the known prefix")
+				bail!("unknown key starts with the known prefix")
 			}
 			out.insert(&k.0, v.0)
 		}
@@ -102,14 +101,14 @@ fn rebuild_pallet(
 			continue;
 		}
 		let Some(entry) = meta.entries.iter().find(|p| p.name == key.as_str()) else {
-			throw!("unknown entry: {key}");
+			bail!("unknown entry: {key}");
 		};
 		let storage_prefix = twox_128(entry.name.as_bytes());
 
 		let data = data?;
 		handled_prefixes.push(storage_prefix);
 		out.push_prefix(&storage_prefix);
-		rebuild_storage_entry(data, out, reg, &entry)
+		rebuild_storage_entry(data, out, reg, entry)
 			.with_description(|| format!("storage entry <{key}> rebuild"))?;
 		out.pop_prefix()
 	}
@@ -117,7 +116,7 @@ fn rebuild_pallet(
 		let map = <BTreeMap<Hex, Hex>>::from_untyped(unknown)?;
 		for (k, v) in map {
 			if handled_prefixes.iter().any(|p| k.0.starts_with(p)) {
-				throw!("unknown key starts with the known prefix")
+				bail!("unknown key starts with the known prefix")
 			}
 			out.insert(&k.0, v.0)
 		}
@@ -162,7 +161,7 @@ fn rebuild_storage(
 		encode_single_key(
 			reg,
 			hasher.clone(),
-			key_ty.clone(),
+			*key_ty,
 			Val::Str(key.into()),
 			&mut encoded,
 			true,

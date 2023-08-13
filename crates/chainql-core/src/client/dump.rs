@@ -29,7 +29,7 @@ fn next(key: &mut [u8]) {
 impl ClientT for ClientDump {
 	fn get_keys(&self, prefix: &[u8]) -> super::Result<Vec<Vec<u8>>> {
 		if prefix.is_empty() {
-			return Ok(self.data.keys().cloned().collect())
+			return Ok(self.data.keys().cloned().collect());
 		}
 		let mut last = prefix.to_vec();
 		next(&mut last);

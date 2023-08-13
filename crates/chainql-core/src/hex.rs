@@ -2,11 +2,12 @@ use std::{borrow::Borrow, ops::Deref};
 
 use jrsonnet_evaluator::{
 	function::builtin,
+	runtime_error,
 	typed::{CheckType, ComplexValType, Typed, ValType},
 	Result, Val,
 };
 
-use crate::{anyhow, ensure};
+use crate::ensure;
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -38,7 +39,7 @@ impl Deref for Hex {
 	type Target = [u8];
 
 	fn deref(&self) -> &Self::Target {
-		&self.0.as_slice()
+		self.0.as_slice()
 	}
 }
 
@@ -54,8 +55,8 @@ pub fn to_hex(data: &[u8]) -> String {
 /// Convert a hex string to a vector of bytes.
 pub fn from_hex(data: &str) -> Result<Vec<u8>> {
 	ensure!(data.starts_with("0x"), "string doesn't starts with 0x");
-	let out =
-		hex::decode(&data.as_bytes()[2..]).map_err(|e| anyhow!("failed to decode hex: {e}"))?;
+	let out = hex::decode(&data.as_bytes()[2..])
+		.map_err(|e| runtime_error!("failed to decode hex: {e}"))?;
 	Ok(out)
 }
 

@@ -1,6 +1,7 @@
 use std::{rc::Rc, result};
 
 use frame_metadata::RuntimeMetadataV14;
+use jrsonnet_evaluator::runtime_error;
 use jrsonnet_gcmodule::Trace;
 
 pub mod dump;
@@ -15,12 +16,18 @@ pub enum Error {
 }
 type Result<T, E = Error> = result::Result<T, E>;
 
+impl From<Error> for jrsonnet_evaluator::Error {
+	fn from(value: Error) -> Self {
+		runtime_error!("client: {value}")
+	}
+}
+
 pub trait ClientT {
 	fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>>;
 	fn get_unknown_keys(&self, prefix: &[u8], known_prefixes: &[&Vec<u8>]) -> Result<Vec<Vec<u8>>> {
 		let keys = self.get_keys(prefix)?;
 		assert!(
-			known_prefixes.iter().find(|p| p.is_empty()).is_none(),
+			known_prefixes.iter().all(|p| !p.is_empty()),
 			"known prefix can't be empty"
 		);
 		Ok(keys

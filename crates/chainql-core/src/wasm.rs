@@ -1,8 +1,8 @@
-use std::{borrow::Cow, rc::Rc};
+use std::borrow::Cow;
 
 use jrsonnet_evaluator::{
 	error::ErrorKind::RuntimeError, function::builtin, typed::Typed, val::ThunkValue, ObjValue,
-	Result, Thunk, Val,
+	Result, Val,
 };
 use jrsonnet_gcmodule::{Cc, Trace};
 use parity_scale_codec::Decode;
@@ -98,14 +98,12 @@ pub fn builtin_runtime_wasm(data: Hex) -> Result<ObjValue> {
 
 	let mut out = ObjValue::builder();
 
-	out.member("version".into())
-		.thunk(Thunk::new(RuntimeVersionThunk {
-			runtime: runtime.clone(),
-		}))?;
-	out.member("metadata".into())
-		.thunk(Thunk::new(MetadataThunk {
-			runtime: runtime.clone(),
-		}))?;
+	out.field("version").thunk(RuntimeVersionThunk {
+		runtime: runtime.clone(),
+	})?;
+	out.field("metadata").thunk(MetadataThunk {
+		runtime: runtime.clone(),
+	})?;
 
 	Ok(out.build())
 }
