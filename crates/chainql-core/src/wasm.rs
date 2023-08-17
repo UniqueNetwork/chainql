@@ -7,6 +7,7 @@ use jrsonnet_evaluator::{
 use jrsonnet_gcmodule::{Cc, Trace};
 use parity_scale_codec::Decode;
 use sc_executor::{RuntimeVersionOf, WasmExecutor};
+use sp_core::blake2_256;
 use sp_core::traits::{CodeExecutor, RuntimeCode, WrappedRuntimeCode};
 use sp_io::SubstrateHostFunctions;
 
@@ -16,6 +17,8 @@ use crate::Hex;
 pub struct RuntimeContainer {
 	#[trace(skip)]
 	code: WrappedRuntimeCode<'static>,
+	#[trace(skip)]
+	hash: [u8; 32],
 	#[trace(skip)]
 	executor: WasmExecutor<SubstrateHostFunctions>,
 }
@@ -31,15 +34,21 @@ pub struct RuntimeVersion {
 impl RuntimeContainer {
 	pub fn new(code: Vec<u8>) -> Self {
 		Self {
+			hash: blake2_256(&code),
 			code: WrappedRuntimeCode(Cow::Owned(code)),
-			executor: <WasmExecutor<SubstrateHostFunctions>>::builder().build(),
+			executor: <WasmExecutor<SubstrateHostFunctions>>::builder()
+				// chainql is single-threaded
+				.with_max_runtime_instances(1)
+				// FIXME: review if this is secure
+				// .with_cache_path(std::env::temp_dir())
+				.build(),
 		}
 	}
 	fn runtime_code(&self) -> RuntimeCode<'_> {
 		RuntimeCode {
 			code_fetcher: &self.code,
 			heap_pages: Some(100),
-			hash: Vec::new(),
+			hash: self.hash.to_vec(),
 		}
 	}
 	pub fn version(&self) -> Result<RuntimeVersion> {
