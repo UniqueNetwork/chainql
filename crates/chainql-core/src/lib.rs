@@ -1378,6 +1378,8 @@ pub fn create_cql() -> ObjValue {
 	cql.method("fromHex", builtin_from_hex::INST);
 	cql.method("ss58", builtin_ss58::INST);
 	cql.method("ss58Encode", builtin_ss58_encode::INST);
+	// Alias
+	cql.method("ss58Decode", builtin_ss58::INST);
 
 	cql.method("sr25519Seed", builtin_sr25519_seed::INST);
 	cql.method("ed25519Seed", builtin_ed25519_seed::INST);
