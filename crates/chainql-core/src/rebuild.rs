@@ -130,14 +130,14 @@ fn rebuild_storage_entry(
 	meta: &StorageEntryMetadata<PortableForm>,
 ) -> Result<()> {
 	match &meta.ty {
-		StorageEntryType::Plain(value) => rebuild_storage(data, out, reg, &[], *value),
+		StorageEntryType::Plain(value) => rebuild_storage(data, out, reg, &[], *value, 0),
 		StorageEntryType::Map {
 			hashers,
 			key,
 			value,
 		} => {
 			let keys = normalize_storage_map_keys(reg, *key, hashers)?;
-			rebuild_storage(data, out, reg, &keys, *value)
+			rebuild_storage(data, out, reg, &keys, *value, 0)
 		}
 	}
 }
@@ -147,10 +147,11 @@ fn rebuild_storage(
 	reg: &PortableRegistry,
 	keys: &[(StorageHasher, UntrackedSymbol<TypeId>)],
 	value: UntrackedSymbol<TypeId>,
+	id: u32,
 ) -> Result<()> {
 	if keys.is_empty() {
 		let mut encoded = Vec::new();
-		encode_value(reg, value, false, data, &mut encoded, false)?;
+		encode_value(reg, value, false, data, &mut encoded, false).description("value")?;
 		out.insert(&[], encoded);
 		return Ok(());
 	}
@@ -165,11 +166,13 @@ fn rebuild_storage(
 			Val::Str(key.into()),
 			&mut encoded,
 			true,
-		)?;
+		)
+		.with_description(|| format!("key part #{id}"))?;
 
 		let data = data?;
 		out.push_prefix(&encoded);
-		rebuild_storage(data, out, reg, &keys[1..], value)?;
+		rebuild_storage(data, out, reg, &keys[1..], value, id + 1)
+			.with_description(|| format!("submap #{}", id + 1))?;
 		out.pop_prefix();
 	}
 	Ok(())
