@@ -31,18 +31,33 @@ use scale_info::{
 };
 use serde::Deserialize;
 use sp_core::{
-	blake2_128, blake2_256,
-	crypto::{Ss58AddressFormat, Ss58Codec},
-	storage::StateVersion,
-	twox_128, twox_256, twox_64, ByteArray, Pair, U256,
+	blake2_128, blake2_256, crypto::Ss58Codec, storage::StateVersion, twox_128, twox_256, twox_64,
+	ByteArray, U256,
 };
-use sp_io::trie::blake2_256_root;
+use sp_io::{hashing::keccak_256, trie::blake2_256_root};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
+use crate::address::Ss58Format;
+
+use self::{ethereum::builtin_eth_encode, address::{
+	builtin_seed,
+	builtin_sr25519_seed,
+	builtin_ed25519_seed,
+	builtin_ecdsa_seed,
+	builtin_ethereum_seed,
+	builtin_address_seed,
+	builtin_sr25519_address_seed,
+	builtin_ed25519_address_seed,
+	builtin_ecdsa_address_seed,
+	builtin_ethereum_address_seed,
+}};
+
+pub mod address;
 mod client;
+pub mod ethereum;
 pub mod hex;
-pub mod rebuild;
 pub mod wasm;
+pub mod rebuild;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
@@ -1117,31 +1132,14 @@ fn builtin_ss58(v: IStr) -> Result<Hex> {
 	Ok(Hex(s.as_slice().into()))
 }
 #[builtin]
-fn builtin_ss58_encode(raw: Hex, format: Option<u16>) -> Result<IStr> {
+fn builtin_ss58_encode(raw: Hex, format: Option<Ss58Format>) -> Result<IStr> {
+	let format = format.unwrap_or_default();
 	let s = sp_core::crypto::AccountId32::from_slice(&raw)
 		.map_err(|()| runtime_error!("bad accountid32 length"))?;
-	let out = s.to_ss58check_with_version(
-		format
-			.map(Ss58AddressFormat::custom)
-			.unwrap_or_else(|| Ss58AddressFormat::custom(42)),
-	);
+	let out = s.to_ss58check_with_version(format.0);
 	Ok(out.into())
 }
 
-#[builtin]
-fn builtin_sr25519_seed(v: IStr) -> Result<Hex> {
-	let s = sp_core::sr25519::Pair::from_string_with_seed(v.as_str(), None)
-		.map_err(|e| runtime_error!("invalid seed: {e:?}"))?;
-	let public = s.0.public();
-	Ok(Hex(public.as_slice().into()))
-}
-#[builtin]
-fn builtin_ed25519_seed(v: IStr) -> Result<Hex> {
-	let s = sp_core::ed25519::Pair::from_string_with_seed(v.as_str(), None)
-		.map_err(|e| runtime_error!("invalid seed: {e:?}"))?;
-	let public = s.0.public();
-	Ok(Hex(public.as_slice().into()))
-}
 
 #[builtin]
 fn builtin_description(description: IStr, value: Thunk<Val>) -> Result<Val> {
@@ -1280,6 +1278,11 @@ fn builtin_twox128_of_string(data: IStr) -> Result<Hex> {
 	Ok(Hex(data.into()))
 }
 
+#[builtin]
+fn builtin_keccak256(data: Hex) -> Hex {
+	Hex(keccak_256(&data).into())
+}
+
 /// Create a mock block Jsonnet object from some parsed data dump.
 ///
 /// This function is passed to Jsonnet and is callable from the code.
@@ -1376,15 +1379,26 @@ pub fn create_cql() -> ObjValue {
 
 	cql.method("toHex", builtin_to_hex::INST);
 	cql.method("fromHex", builtin_from_hex::INST);
+
 	cql.method("ss58", builtin_ss58::INST);
 	cql.method("ss58Encode", builtin_ss58_encode::INST);
-	// Alias
 	cql.method("ss58Decode", builtin_ss58::INST);
+	cql.method("ethEncode", builtin_eth_encode::INST);
 
+	cql.method("seed", builtin_seed::INST);
 	cql.method("sr25519Seed", builtin_sr25519_seed::INST);
 	cql.method("ed25519Seed", builtin_ed25519_seed::INST);
+	cql.method("ecdsaSeed", builtin_ecdsa_seed::INST);
+	cql.method("ethereumSeed", builtin_ethereum_seed::INST);
+
+	cql.method("addressSeed", builtin_address_seed::INST);
+	cql.method("sr25519AddressSeed", builtin_sr25519_address_seed::INST);
+	cql.method("ed25519AddressSeed", builtin_ed25519_address_seed::INST);
+	cql.method("ecdsaAddressSeed", builtin_ecdsa_address_seed::INST);
+	cql.method("ethereumAddressSeed", builtin_ethereum_address_seed::INST);
 
 	cql.method("twox128String", builtin_twox128_of_string::INST);
+	cql.method("keccak256", builtin_keccak256::INST);
 
 	cql.method("blake2_256Root", builtin_blake2_256_root::INST);
 
