@@ -400,7 +400,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "chainql"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chainql-core",
  "clap",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chainql-frame-metadata",
  "directories",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-frame-metadata"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "cfg-if",
  "parity-scale-codec",
@@ -1735,7 +1735,7 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "ledgerbytecode"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "arrayvec 0.7.4",
  "chainql-frame-metadata",
