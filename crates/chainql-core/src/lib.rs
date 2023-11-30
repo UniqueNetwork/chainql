@@ -1,11 +1,13 @@
 use std::{
 	any::TypeId,
-	collections::{BTreeMap, HashSet},
+	collections::{BTreeMap, BTreeSet, HashSet},
+	path::PathBuf,
 	rc::Rc,
 	str::FromStr,
 };
 
 use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
+use directories::BaseDirs;
 use frame_metadata::{
 	PalletMetadata, RuntimeMetadata, RuntimeMetadataPrefixed, RuntimeMetadataV14,
 	StorageEntryModifier, StorageEntryType, StorageHasher,
@@ -16,7 +18,7 @@ use jrsonnet_evaluator::{
 	error::{Error as JrError, Result},
 	function::builtin,
 	runtime_error,
-	typed::{Either2, Typed},
+	typed::{Either2, NativeFn, Typed},
 	val::{ArrValue, ThunkValue},
 	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, State, Thunk,
 	Val,
@@ -37,27 +39,24 @@ use sp_core::{
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
-use crate::address::Ss58Format;
+use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
 
-use self::{ethereum::builtin_eth_encode, address::{
-	builtin_seed,
-	builtin_sr25519_seed,
-	builtin_ed25519_seed,
-	builtin_ecdsa_seed,
-	builtin_ethereum_seed,
-	builtin_address_seed,
-	builtin_sr25519_address_seed,
-	builtin_ed25519_address_seed,
-	builtin_ecdsa_address_seed,
-	builtin_ethereum_address_seed,
-}};
+use self::{
+	address::{
+		builtin_address_seed, builtin_ecdsa_address_seed, builtin_ecdsa_seed,
+		builtin_ed25519_address_seed, builtin_ed25519_seed, builtin_ethereum_address_seed,
+		builtin_ethereum_seed, builtin_seed, builtin_sr25519_address_seed, builtin_sr25519_seed,
+		SignatureType,
+	},
+	ethereum::builtin_eth_encode,
+};
 
 pub mod address;
 mod client;
 pub mod ethereum;
 pub mod hex;
-pub mod wasm;
 pub mod rebuild;
+pub mod wasm;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
@@ -351,12 +350,13 @@ where
 		}
 		TypeDef::Tuple(e) => {
 			let val = maybe_json_parse(val, from_string)?;
-			let v = Vec::<Val>::from_untyped(val)?;
+			let v = ArrValue::from_untyped(val)?;
 			ensure!(
 				e.fields.len() == v.len(),
 				"tuple has wrong number of elements"
 			);
 			for (ty, val) in e.fields.iter().zip(v.iter()) {
+				let val = val?;
 				encode_value(reg, *ty, compact, val.clone(), out, false)?;
 			}
 		}
@@ -509,7 +509,7 @@ where
 				Val::Arr(ArrValue::eager(out))
 			}
 			TypeDef::Tuple(t) => {
-				let mut out = vec![];
+				let mut out = Vec::with_capacity(t.fields.len());
 				for t in t.fields.iter() {
 					let val = decode_value(dec, reg, *t, compact)?;
 					out.push(val);
@@ -1115,6 +1115,232 @@ fn builtin_decode(this: &builtin_decode, typ: u32, v: Hex) -> Result<Val> {
 	decode_value(&mut v.0.as_slice(), &this.reg, sym, false).map(Val::from)
 }
 
+#[derive(Typed)]
+struct ExtrinsicData {
+	signature: Option<Signature>,
+	call: Val,
+}
+#[derive(Typed)]
+struct Signature {
+	address: Val,
+	signature: Val,
+	extra: BTreeMap<String, Val>,
+}
+
+struct ExtrinsicEncoding {
+	version: u8,
+	address: UntrackedSymbol<TypeId>,
+	address_type: AddressType,
+	call: UntrackedSymbol<TypeId>,
+	signature: UntrackedSymbol<TypeId>,
+	signature_type: SignatureType,
+	// extra: UntrackedSymbol<TypeId>,
+	extra: Vec<(String, UntrackedSymbol<TypeId>, UntrackedSymbol<TypeId>)>,
+}
+fn guess_extrinsic_encoding(metadata: &RuntimeMetadataV14) -> Result<ExtrinsicEncoding> {
+	let extrinsic_ty = metadata.extrinsic.ty;
+	let extrinsic = metadata
+		.types
+		.resolve(extrinsic_ty.id)
+		.expect("extrinsic ty");
+
+	let mut params = extrinsic.type_params.iter();
+	let Some(address) = params.next() else {
+		bail!("param not found");
+	};
+	ensure!(address.name == "Address", "not address");
+	let Some(address) = address.ty else {
+		bail!("param not set");
+	};
+
+	let Some(call) = params.next() else {
+		bail!("param not found");
+	};
+	ensure!(call.name == "Call", "not call");
+	let Some(call) = call.ty else {
+		bail!("param not set");
+	};
+
+	let Some(signature) = params.next() else {
+		bail!("param not found");
+	};
+	ensure!(signature.name == "Signature", "not signature");
+	let Some(signature) = signature.ty else {
+		bail!("param not set");
+	};
+
+	let Some(extra) = params.next() else {
+		bail!("param not found");
+	};
+	ensure!(extra.name == "Extra", "not extra");
+	let Some(extra) = extra.ty else {
+		bail!("param not set");
+	};
+	let _ = extra;
+
+	let mut extra = vec![];
+	let mut had_extra = BTreeSet::new();
+	for ele in metadata.extrinsic.signed_extensions.iter() {
+		extra.push((ele.identifier.clone(), ele.ty, ele.additional_signed));
+		if !had_extra.insert(&ele.identifier) {
+			bail!(
+				"signed extension {} appeared twice, this is not supported",
+				ele.identifier
+			);
+		};
+	}
+
+	let sigty = metadata
+		.types
+		.resolve(signature.id)
+		.expect("missing signature");
+	let signature_type = if sigty.path.segments == ["sp_runtime", "MultiSignature"] {
+		SignatureType::MultiSignature
+	} else {
+		bail!("unknown signature type: {:?}", sigty.path);
+	};
+
+	let addrty = metadata.types.resolve(address.id).expect("missing address");
+	let address_type = if addrty.path.segments == ["sp_runtime", "multiaddress", "MultiAddress"] {
+		let mut params = addrty.type_params.iter();
+		let Some(addr) = params.next() else {
+			bail!("missing multiaddr generic");
+		};
+		ensure!(addr.name == "AccountId", "not param");
+		let Some(addr) = addr.ty else {
+			bail!("missing addr");
+		};
+
+		let inaddrty = metadata.types.resolve(addr.id).expect("missing inaddr");
+		dbg!(&inaddrty.path);
+
+		let default = if inaddrty.path.segments == ["sp_core", "crypto", "AccountId32"] {
+			AddressSchema::Id32
+		} else {
+			bail!("unknown inaddr type: {:?}", inaddrty.path);
+		};
+
+		AddressType::MultiAddress { default }
+	} else {
+		bail!("unknown address type: {:?}", addrty.path);
+	};
+
+	Ok(ExtrinsicEncoding {
+		version: metadata.extrinsic.version,
+		address,
+		address_type,
+		call,
+		signature,
+		signature_type,
+		extra,
+	})
+}
+
+#[builtin(fields(
+    meta: Rc<RuntimeMetadataV14>,
+))]
+fn builtin_decode_extrinsic(
+	this: &builtin_decode_extrinsic,
+	value: Hex,
+	additional_signed: Option<NativeFn<((Val,), ObjValue)>>,
+) -> Result<ExtrinsicData> {
+	// decode_value(&mut value.0.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
+	let encoding = guess_extrinsic_encoding(&this.meta)?;
+
+	let data = value.0;
+	let mut cursor = data.as_slice();
+
+	let length =
+		<Compact<u32>>::decode(&mut cursor).map_err(|e| runtime_error!("bad length: {e}"))?;
+	ensure!(cursor.len() == length.0 as usize, "length mismatch");
+
+	let version = u8::decode(&mut cursor).map_err(|e| runtime_error!("bad ver: {e}"))?;
+
+	let is_signed = version & 0b10000000 != 0;
+	let version = version & 0b01111111;
+
+	ensure!(version == encoding.version, "extrinsic version mismatch");
+
+	let signature = if is_signed {
+		let address = decode_value(&mut cursor, &this.meta.types, encoding.address, false)
+			.map_err(|e| runtime_error!("bad address: {e}"))?;
+		let signature = decode_value(&mut cursor, &this.meta.types, encoding.signature, false)
+			.map_err(|e| runtime_error!("bad signature encoding: {e}"))?;
+		let mut extra = BTreeMap::new();
+		for (name, data, _) in encoding.extra.iter() {
+			let data = decode_value(&mut cursor, &this.meta.types, *data, false)?;
+			extra.insert(name.clone(), data);
+		}
+		// dbg!(&address);
+		Some(Signature {
+			address,
+			signature,
+			extra,
+		})
+	} else {
+		None
+	};
+	let call = decode_value(&mut cursor, &this.meta.types, encoding.call, false)
+		.map_err(|e| runtime_error!("bad call encoding: {e}"))?;
+	ensure!(cursor.is_empty(), "unexpected trailing data");
+
+	if let Some(signature) = &signature {
+		let mut call_data = vec![];
+		encode_value(
+			&this.meta.types,
+			encoding.call,
+			false,
+			call.clone(),
+			&mut call_data,
+			false,
+		)?;
+		let mut signing_payload = call_data;
+		for (name, format, _) in encoding.extra.iter() {
+			let data = signature.extra.get(name).expect("aaa");
+			encode_value(
+				&this.meta.types,
+				*format,
+				false,
+				data.clone(),
+				&mut signing_payload,
+				false,
+			)
+			.with_description(|| format!("while encoding extra {name} ([] by default)"))?;
+		}
+		if let Some(data) = additional_signed {
+			for (name, _, format) in encoding.extra.iter() {
+				let data = data(BTreeMap::into_untyped(signature.extra.clone())?)?
+					.get(name.into())
+					.with_description(|| format!("getting data for {name}"))?
+					.unwrap_or_else(|| Val::Arr(ArrValue::empty()));
+				encode_value(
+					&this.meta.types,
+					*format,
+					false,
+					data,
+					&mut signing_payload,
+					false,
+				)
+				.with_description(|| {
+					format!("while encoding signedextra {name} ([] by default)")
+				})?;
+			}
+		}
+		dbg!(signing_payload.len());
+		if !verify_signature(
+			encoding.signature_type,
+			signature.signature.clone(),
+			encoding.address_type,
+			signature.address.clone(),
+			Hex(signing_payload),
+		)? {
+			bail!("invalid signature");
+		}
+	}
+
+	Ok(ExtrinsicData { signature, call })
+}
+
 /// Convert an address from SS58 to a hex string.
 ///
 /// This function is passed to Jsonnet and is callable from the code.
@@ -1139,7 +1365,6 @@ fn builtin_ss58_encode(raw: Hex, format: Option<Ss58Format>) -> Result<IStr> {
 	let out = s.to_ss58check_with_version(format.0);
 	Ok(out.into())
 }
-
 
 #[builtin]
 fn builtin_description(description: IStr, value: Thunk<Val>) -> Result<Val> {
@@ -1196,6 +1421,10 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 	})?;
 	out.method("_encode", builtin_encode { reg: reg.clone() });
 	out.method("_decode", builtin_decode { reg });
+	out.method(
+		"_decodeExtrinsic",
+		builtin_decode_extrinsic { meta: meta.clone() },
+	);
 	out.method("_rebuild", builtin_rebuild { meta: meta.clone() });
 
 	let preload_keys = simple_thunk! {
@@ -1346,12 +1575,18 @@ fn builtin_dump(
 	)
 }
 
-#[builtin]
-fn builtin_full_dump(data: BTreeMap<Hex, Hex>, opts: Option<ChainOpts>) -> Result<ObjValue> {
+#[builtin(fields(
+	cache_path: Option<PathBuf>,
+))]
+fn builtin_full_dump(
+	this: &builtin_full_dump,
+	data: BTreeMap<Hex, Hex>,
+	opts: Option<ChainOpts>,
+) -> Result<ObjValue> {
 	let Some(code) = data.get(&Hex::encode_str(":code")) else {
 		bail!("there is no code stored in the provided dump");
 	};
-	let runtime = RuntimeContainer::new(code.0.clone());
+	let runtime = RuntimeContainer::new(code.0.clone(), this.cache_path.as_deref());
 	let meta = runtime.metadata()?;
 	builtin_dump(Either2::B(Hex(meta)), data, opts)
 }
@@ -1370,12 +1605,11 @@ fn builtin_blake2_256_root(tree: BTreeMap<Hex, Hex>, state_version: u8) -> Resul
 	Ok(Hex(blake2_256_root(pairs, state_version).as_bytes().into()))
 }
 
-pub fn create_cql() -> ObjValue {
+pub fn create_cql(wasm_cache_path: Option<PathBuf>) -> ObjValue {
 	// Pass the built-in functions as macro-generated structs into the cql object available from Jsonnet code.
 	let mut cql = ObjValueBuilder::new();
 	cql.method("chain", builtin_chain::INST);
 	cql.method("dump", builtin_dump::INST);
-	cql.method("fullDump", builtin_full_dump::INST);
 
 	cql.method("toHex", builtin_to_hex::INST);
 	cql.method("fromHex", builtin_from_hex::INST);
@@ -1402,7 +1636,18 @@ pub fn create_cql() -> ObjValue {
 
 	cql.method("blake2_256Root", builtin_blake2_256_root::INST);
 
-	cql.method("runtimeWasm", builtin_runtime_wasm::INST);
+	cql.method(
+		"fullDump",
+		builtin_full_dump {
+			cache_path: wasm_cache_path.clone(),
+		},
+	);
+	cql.method(
+		"runtimeWasm",
+		builtin_runtime_wasm {
+			cache_path: wasm_cache_path,
+		},
+	);
 
 	cql.method("description", builtin_description::INST);
 
@@ -1415,8 +1660,13 @@ pub struct CqlContextInitializer {
 }
 impl Default for CqlContextInitializer {
 	fn default() -> Self {
+		let wasm_cache_dir = BaseDirs::new().map(|b| {
+			let mut d = b.cache_dir().to_owned();
+			d.push("chainql");
+			d
+		});
 		Self {
-			cql: Thunk::evaluated(Val::Obj(create_cql())),
+			cql: Thunk::evaluated(Val::Obj(create_cql(wasm_cache_dir))),
 		}
 	}
 }

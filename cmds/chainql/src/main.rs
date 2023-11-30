@@ -1,9 +1,8 @@
 use std::{io::Read, process};
 
-use chainql_core::create_cql;
 use clap::Parser;
 use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
-use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State, Thunk, Val};
+use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State};
 use tokio::runtime::Handle;
 
 /// chainql
@@ -27,9 +26,10 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
 	let import_resolver = opts.misc.import_resolver();
 	s.set_import_resolver(import_resolver);
 	if let Some(std) = opts.std.context_initializer(&s)? {
-		s.set_context_initializer(std);
+		s.set_context_initializer((chainql_core::CqlContextInitializer::default(), std));
+	} else {
+		s.set_context_initializer(chainql_core::CqlContextInitializer::default());
 	}
-	s.add_global("cql".into(), Thunk::evaluated(Val::Obj(create_cql())));
 
 	// Resolve the Jsonnet code supplied to chainql.
 	let res = if opts.input.exec {

@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, result};
+use std::collections::BTreeMap;
+use std::{cell::RefCell, rc::Rc, result};
 
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
 use jrsonnet_gcmodule::Trace;
@@ -104,7 +105,7 @@ impl ClientShared {
 
 		Ok(LiveClient {
 			real: self.real.clone(),
-			key_value_cache: Rc::new(RefCell::new(HashMap::new())),
+			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
 			block: Rc::new(block),
 		})
@@ -117,7 +118,7 @@ pub struct LiveClient {
 	real: Rc<WsClient>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
-	key_value_cache: Rc<RefCell<HashMap<Vec<u8>, Option<Vec<u8>>>>>,
+	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
 	fetched_prefixes: Rc<RefCell<Vec<Vec<u8>>>>,
 	#[trace(skip)]
 	block: Rc<String>,
@@ -270,6 +271,27 @@ impl LiveClient {
 		}
 	}
 	fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
+		if self
+			.fetched_prefixes
+			.borrow()
+			.iter()
+			.any(|p| prefix.starts_with(p))
+		{
+			// Relevant prefix is fully fetched
+			if let Some((key, _)) = self
+				.key_value_cache
+				.borrow()
+				.range(prefix.to_owned()..)
+				.next()
+			{
+				// We next or same key as wanted is...
+				if key.starts_with(prefix) {
+					// Equals/starts with
+					return Ok(true);
+				}
+			}
+			return Ok(false);
+		}
 		eprintln!("checking for keys under {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 

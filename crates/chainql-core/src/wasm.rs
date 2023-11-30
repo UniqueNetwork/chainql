@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 use jrsonnet_evaluator::{
 	error::ErrorKind::RuntimeError, function::builtin, typed::Typed, val::ThunkValue, ObjValue,
@@ -32,16 +33,18 @@ pub struct RuntimeVersion {
 }
 
 impl RuntimeContainer {
-	pub fn new(code: Vec<u8>) -> Self {
+	pub fn new(code: Vec<u8>, cache_path: Option<&Path>) -> Self {
+		let mut executor = <WasmExecutor<SubstrateHostFunctions>>::builder()
+			// chainql is single-threaded
+			.with_max_runtime_instances(1);
+		if let Some(cache_path) = cache_path {
+			executor = executor.with_cache_path(cache_path);
+		};
+		let executor = executor.build();
 		Self {
 			hash: blake2_256(&code),
 			code: WrappedRuntimeCode(Cow::Owned(code)),
-			executor: <WasmExecutor<SubstrateHostFunctions>>::builder()
-				// chainql is single-threaded
-				.with_max_runtime_instances(1)
-				// FIXME: review if this is secure
-				// .with_cache_path(std::env::temp_dir())
-				.build(),
+			executor,
 		}
 	}
 	fn runtime_code(&self) -> RuntimeCode<'_> {
@@ -80,9 +83,11 @@ impl RuntimeContainer {
 	}
 }
 
-#[builtin]
-pub fn builtin_runtime_wasm(data: Hex) -> Result<ObjValue> {
-	let runtime = Cc::new(RuntimeContainer::new(data.0));
+#[builtin(fields(
+	cache_path: Option<PathBuf>,
+))]
+pub fn builtin_runtime_wasm(this: &builtin_runtime_wasm, data: Hex) -> Result<ObjValue> {
+	let runtime = Cc::new(RuntimeContainer::new(data.0, this.cache_path.as_deref()));
 
 	#[derive(Trace)]
 	struct RuntimeVersionThunk {

@@ -5,14 +5,15 @@ use jrsonnet_evaluator::{
 	jrsonnet_macros::builtin,
 	runtime_error,
 	typed::{CheckType, ComplexValType, Either2, Typed, ValType},
-	Either, IStr, Result, Val,
+	Either, IStr, ObjValue, Result, ResultExt, Val,
 };
 use sp_core::{
 	crypto::{SecretStringError, Ss58AddressFormat, Ss58AddressFormatRegistry, Ss58Codec},
-	Pair,
+	ecdsa, ed25519, keccak_256, sr25519, Pair,
 };
+use sp_runtime::{traits::Verify, AccountId32, MultiSignature};
 
-use crate::{ethereum::eth_cksum_address_from_ecdsa, hex::Hex};
+use crate::{ensure, ethereum::eth_cksum_address_from_ecdsa, hex::Hex};
 
 pub struct Ss58Format(pub Ss58AddressFormat);
 impl Typed for Ss58Format {
@@ -74,7 +75,7 @@ pub fn address_seed(
 	format: Ss58AddressFormat,
 ) -> Result<String, SecretStringError> {
 	Ok(match scheme {
-		SignatureSchema::Ed25519 => sp_core::ed25519::Pair::from_string_with_seed(suri, None)?
+		SignatureSchema::Ed25519 => ed25519::Pair::from_string_with_seed(suri, None)?
 			.0
 			.public()
 			.to_ss58check_with_version(format),
@@ -98,7 +99,7 @@ pub fn public_bytes_seed(
 	suri: &str,
 ) -> Result<Vec<u8>, SecretStringError> {
 	let bytes = match scheme {
-		SignatureSchema::Ed25519 => sp_core::ed25519::Pair::from_string_with_seed(suri, None)?
+		SignatureSchema::Ed25519 => ed25519::Pair::from_string_with_seed(suri, None)?
 			.0
 			.public()
 			.0
@@ -162,4 +163,128 @@ seed_helpers! {
 	/// Accepts an optional `Ss58Format` argument, but it isn't used, it is only left for consistency, ethereum addresses
 	/// do not use ss58 encoding.
 	builtin_ethereum_seed, builtin_ethereum_address_seed: Ethereum;
+}
+
+#[derive(Clone, Copy)]
+pub enum SignatureType {
+	MultiSignature,
+	Plain(SignatureSchema),
+}
+#[derive(Clone, PartialEq)]
+pub enum AddressSchema {
+	Id32,
+	Id20,
+}
+#[derive(Clone)]
+pub enum AddressType {
+	MultiAddress { default: AddressSchema },
+	Plain(AddressSchema),
+}
+pub fn verify_signature(
+	signature_ty: SignatureType,
+	signature: Val,
+	address_ty: AddressType,
+	address: Val,
+	data: Hex,
+) -> Result<bool> {
+	let (signature_ty, signature) = match signature_ty {
+		SignatureType::MultiSignature => {
+			let sign = ObjValue::from_untyped(signature).description("multisignature obj")?;
+			let fields = sign.fields(false);
+			if fields.len() != 1 {
+				bail!("multisignature is enum");
+			};
+			let plain = match fields[0].as_str() {
+				"Ed25519" => SignatureSchema::Ed25519,
+				"Sr25519" => SignatureSchema::Sr25519,
+				"Ecdsa" => SignatureSchema::Ecdsa,
+				s => bail!("unknown multisignature type: {s}"),
+			};
+			let value = sign
+				.get(fields[0].clone())
+				.description("signature value")?
+				.expect("exists");
+			(
+				plain,
+				Hex::from_untyped(value).description("multisig value")?.0,
+			)
+		}
+		SignatureType::Plain(s) => (s, Hex::from_untyped(signature).description("signature")?.0),
+	};
+
+	let (address_ty, address) = match address_ty {
+		AddressType::MultiAddress { default } => {
+			let addr = ObjValue::from_untyped(address).description("multiaddress obj")?;
+			let fields = addr.fields(false);
+			if fields.len() != 1 {
+				bail!("multiaddress is enum");
+			};
+			let ty = fields[0].as_str();
+			if ty == "Address32" || ty == "Id" && default == AddressSchema::Id32 {
+				let value = addr
+					.get(ty.into())
+					.description("address value")?
+					.expect("exists");
+				(
+					AddressSchema::Id32,
+					Hex::from_untyped(value).description("multiaddr value")?.0,
+				)
+			} else {
+				bail!("unknown multiaddress type: {ty}");
+			}
+		}
+		AddressType::Plain(_) => todo!(),
+	};
+
+	if let SignatureSchema::Ethereum = signature_ty {
+		ensure!(
+			address_ty == AddressSchema::Id20,
+			"ethereum address schema should be id20"
+		);
+		let address: [u8; 20] = address
+			.try_into()
+			.map_err(|e| runtime_error!("bad ethereum address: {e:?}"))?;
+		let hash = keccak_256(&data);
+		let ecdsa_sign = signature
+			.try_into()
+			.map_err(|e| runtime_error!("bad ethereum signature: {e:?}"))?;
+		match sp_io::crypto::secp256k1_ecdsa_recover(&ecdsa_sign, &hash) {
+			Ok(pubkey) => {
+				let pubkey_hash = keccak_256(&pubkey);
+				let mut expected_address = [0; 20];
+				expected_address.copy_from_slice(&pubkey_hash[12..32]);
+				return Ok(expected_address == address);
+			}
+			Err(_) => return Ok(false),
+		}
+	}
+
+	let multisig = match signature_ty {
+		SignatureSchema::Ed25519 => MultiSignature::Ed25519(ed25519::Signature::from_raw(
+			signature
+				.try_into()
+				.map_err(|e| runtime_error!("bad ecdsa signature: {e:?}"))?,
+		)),
+		SignatureSchema::Sr25519 => MultiSignature::Sr25519(sr25519::Signature::from_raw(
+			signature
+				.try_into()
+				.map_err(|e| runtime_error!("bad sr25519 signature: {e:?}"))?,
+		)),
+		SignatureSchema::Ecdsa => MultiSignature::Ecdsa(ecdsa::Signature::from_raw(
+			signature
+				.try_into()
+				.map_err(|e| runtime_error!("bad ecdsa signature: {e:?}"))?,
+		)),
+		SignatureSchema::Ethereum => unreachable!("has special handling"),
+	};
+
+	ensure!(
+		address_ty == AddressSchema::Id32,
+		"substrate address schema should be id32"
+	);
+	let address: [u8; 32] = address
+		.try_into()
+		.map_err(|e| runtime_error!("bad accountid32: {e:?}"))?;
+	let id32 = AccountId32::new(address);
+	Ok(multisig.verify(data.0.as_slice(), &id32))
 }
