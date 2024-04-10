@@ -14,7 +14,7 @@ use super::ClientT;
 #[derive(Error, Debug)]
 pub enum Error {
 	#[error("rpc error: {0}")]
-	Rpc(#[from] jsonrpsee::core::Error),
+	Rpc(#[from] jsonrpsee::core::ClientError),
 	#[error("unsupported metadata version, only v14 is supported")]
 	UnsupportedMetadataVersion,
 	#[error("block not found: {}", .0.map(|v| v.to_string()).unwrap_or_else(|| "latest".to_string()))]
@@ -210,7 +210,7 @@ impl LiveClient {
 		let chunk_size = keys.len();
 		match self.preload_storage_naive(keys) {
 			Ok(()) => Ok(()),
-			Err(Error::Rpc(jsonrpsee::core::Error::Call(c))) if c.code() == -32702 => {
+			Err(Error::Rpc(jsonrpsee::core::ClientError::Call(c))) if c.code() == -32702 => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
 				self.preload_storage_fallback(keysa)?;
 				self.preload_storage_fallback(keysb)?;
