@@ -12,7 +12,7 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-        rust = ((pkgs.rustChannelOf { date = "2023-10-05"; channel = "nightly"; }).default.override {
+        rust = ((pkgs.rustChannelOf { date = "2024-03-20"; channel = "nightly"; }).default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
           targets = ["x86_64-unknown-linux-musl" "x86_64-unknown-linux-gnu"];
         });
@@ -22,7 +22,10 @@
           nativeBuildInputs = with pkgs;[
             rust
             cargo-edit
+            rustPlatform.bindgenHook
           ];
+
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
         };
       }
     );
