@@ -10,7 +10,8 @@ use parity_scale_codec::Decode;
 use sc_executor::{RuntimeVersionOf, WasmExecutor};
 use sp_core::blake2_256;
 use sp_core::traits::{CodeExecutor, RuntimeCode, WrappedRuntimeCode};
-use sp_io::SubstrateHostFunctions;
+
+type HostFunctions = (sp_io::SubstrateHostFunctions, cumulus_client_service::storage_proof_size::HostFunctions);
 
 use crate::Hex;
 
@@ -21,7 +22,7 @@ pub struct RuntimeContainer {
 	#[trace(skip)]
 	hash: [u8; 32],
 	#[trace(skip)]
-	executor: WasmExecutor<SubstrateHostFunctions>,
+	executor: WasmExecutor<HostFunctions>,
 }
 
 #[derive(Typed)]
@@ -34,7 +35,7 @@ pub struct RuntimeVersion {
 
 impl RuntimeContainer {
 	pub fn new(code: Vec<u8>, cache_path: Option<&Path>) -> Self {
-		let mut executor = <WasmExecutor<SubstrateHostFunctions>>::builder()
+		let mut executor = <WasmExecutor<HostFunctions>>::builder()
 			// chainql is single-threaded
 			.with_max_runtime_instances(1);
 		if let Some(cache_path) = cache_path {
@@ -74,7 +75,6 @@ impl RuntimeContainer {
 			&self.runtime_code(),
 			"Metadata_metadata",
 			&[],
-			false,
 			sp_core::traits::CallContext::Onchain,
 		);
 		let result = result.expect("metadata is implemented for substrate chains");
