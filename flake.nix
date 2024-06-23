@@ -56,6 +56,7 @@
             cargo-edit
             rustPlatform.bindgenHook
           ];
+
           environment.PROTOC = "${pkgs.protobuf}/bin/protoc";
         };
       };
