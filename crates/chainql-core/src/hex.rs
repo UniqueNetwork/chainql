@@ -66,7 +66,7 @@ pub fn from_hex(data: &str) -> Result<Vec<u8>> {
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// cql.toHex([0, 0, 0, 2, 16, 62, 200, 1]) == "0x00000002103ec801"
 /// ```
 #[builtin]
@@ -80,7 +80,7 @@ pub fn builtin_to_hex(data: Vec<u8>) -> Result<Hex> {
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// cql.fromHex("0x00000002103ec801") == [0, 0, 0, 2, 16, 62, 200, 1]
 /// ```
 #[builtin]

@@ -11,7 +11,7 @@ use sc_executor::{RuntimeVersionOf, WasmExecutor};
 use sp_core::blake2_256;
 use sp_core::traits::{CodeExecutor, RuntimeCode, WrappedRuntimeCode};
 
-type HostFunctions = (sp_io::SubstrateHostFunctions, cumulus_client_service::storage_proof_size::HostFunctions);
+type HostFunctions = (sp_io::SubstrateHostFunctions, cumulus_primitives_proof_size_hostfunction::storage_proof_size::HostFunctions);
 
 use crate::Hex;
 

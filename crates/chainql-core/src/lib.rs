@@ -1347,7 +1347,7 @@ fn builtin_decode_extrinsic(
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// cql.ss58("5F6kd9bskZE53HP4JZqadDvEzvrCi4179F6ma3ZV4G3U3x7Y") ==
 ///     "0x864481616c4bd8689a578cb28e1da470f7b819d6b6df8f4d65b50aba8f996508"
 /// ```
@@ -1476,7 +1476,7 @@ struct ChainOpts {
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// cql.chain("ws://localhost:9944")
 /// ```
 #[builtin]
@@ -1518,7 +1518,7 @@ fn builtin_keccak256(data: Hex) -> Hex {
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// cql.dump(cql.chain("ws://localhost:9944").latest._meta, {
 ///     "a": 1,
 ///     "b": 2,
