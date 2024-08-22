@@ -11,7 +11,10 @@ use sc_executor::{RuntimeVersionOf, WasmExecutor};
 use sp_core::blake2_256;
 use sp_core::traits::{CodeExecutor, RuntimeCode, WrappedRuntimeCode};
 
-type HostFunctions = (sp_io::SubstrateHostFunctions, cumulus_primitives_proof_size_hostfunction::storage_proof_size::HostFunctions);
+type HostFunctions = (
+	sp_io::SubstrateHostFunctions,
+	cumulus_primitives_proof_size_hostfunction::storage_proof_size::HostFunctions,
+);
 
 use crate::Hex;
 
@@ -37,7 +40,9 @@ impl RuntimeContainer {
 	pub fn new(code: Vec<u8>, cache_path: Option<&Path>) -> Self {
 		let mut executor = <WasmExecutor<HostFunctions>>::builder()
 			// chainql is single-threaded
-			.with_max_runtime_instances(1);
+			.with_max_runtime_instances(1)
+			// allow to work with runtimes with custom set of host functions
+			.with_allow_missing_host_functions(true);
 		if let Some(cache_path) = cache_path {
 			executor = executor.with_cache_path(cache_path);
 		};
