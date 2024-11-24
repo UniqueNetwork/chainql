@@ -1352,13 +1352,13 @@ fn builtin_decode_extrinsic(
 ///     "0x864481616c4bd8689a578cb28e1da470f7b819d6b6df8f4d65b50aba8f996508"
 /// ```
 #[builtin]
-fn builtin_ss58(v: IStr) -> Result<Hex> {
+pub fn builtin_ss58(v: IStr) -> Result<Hex> {
 	let s = sp_core::crypto::AccountId32::from_string(&v)
 		.map_err(|e| runtime_error!("wrong ss58: {e}"))?;
 	Ok(Hex(s.as_slice().into()))
 }
 #[builtin]
-fn builtin_ss58_encode(raw: Hex, format: Option<Ss58Format>) -> Result<IStr> {
+pub fn builtin_ss58_encode(raw: Hex, format: Option<Ss58Format>) -> Result<IStr> {
 	let format = format.unwrap_or_default();
 	let s = sp_core::crypto::AccountId32::from_slice(&raw)
 		.map_err(|()| runtime_error!("bad accountid32 length"))?;
@@ -1463,11 +1463,11 @@ fn chain_block(this: &chain_block, block: u32) -> Result<ObjValue> {
 
 /// Selection of optional flags for chain data processing.
 #[derive(Typed, Trace, Default, Clone, Copy)]
-struct ChainOpts {
+pub struct ChainOpts {
 	/// Whether or not to ignore trie prefixes with no keys
-	omit_empty: bool,
+	pub omit_empty: bool,
 	/// Should default values be included in output
-	include_defaults: bool,
+	pub include_defaults: bool,
 }
 
 /// Get chain data from a URL, including queryable storage, metadata, and blocks.
@@ -1480,7 +1480,7 @@ struct ChainOpts {
 /// cql.chain("ws://localhost:9944")
 /// ```
 #[builtin]
-fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 	let opts = opts.unwrap_or_default();
 	let client = ClientShared::new(url).map_err(client::Error::Live)?;
 	let mut obj = ObjValueBuilder::new();
@@ -1502,13 +1502,17 @@ fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 }
 
 #[builtin]
-fn builtin_twox128_of_string(data: IStr) -> Result<Hex> {
-	let data = sp_core::twox_128(data.as_bytes());
-	Ok(Hex(data.into()))
+pub fn builtin_twox128_of_string(data: IStr) -> Hex {
+	Hex(sp_core::twox_128(data.as_bytes()).into())
 }
 
 #[builtin]
-fn builtin_keccak256(data: Hex) -> Hex {
+pub fn builtin_twox128(data: Hex) -> Hex {
+	Hex(sp_core::twox_128(&data).into())
+}
+
+#[builtin]
+pub fn builtin_keccak256(data: Hex) -> Hex {
 	Hex(keccak_256(&data).into())
 }
 
@@ -1526,7 +1530,7 @@ fn builtin_keccak256(data: Hex) -> Hex {
 /// }, {omit_empty:true})
 /// ```
 #[builtin]
-fn builtin_dump(
+pub fn builtin_dump(
 	meta: Either![ObjValue, Hex],
 	data: BTreeMap<Hex, Hex>,
 	opts: Option<ChainOpts>,
@@ -1578,7 +1582,7 @@ fn builtin_dump(
 #[builtin(fields(
 	cache_path: Option<PathBuf>,
 ))]
-fn builtin_full_dump(
+pub fn builtin_full_dump(
 	this: &builtin_full_dump,
 	data: BTreeMap<Hex, Hex>,
 	opts: Option<ChainOpts>,
@@ -1632,6 +1636,7 @@ pub fn create_cql(wasm_cache_path: Option<PathBuf>) -> ObjValue {
 	cql.method("ethereumAddressSeed", builtin_ethereum_address_seed::INST);
 
 	cql.method("twox128String", builtin_twox128_of_string::INST);
+	cql.method("twox128", builtin_twox128::INST);
 	cql.method("keccak256", builtin_keccak256::INST);
 
 	cql.method("blake2_256Root", builtin_blake2_256_root::INST);
