@@ -1,11 +1,3 @@
-use std::{
-	any::TypeId,
-	collections::{BTreeMap, BTreeSet, HashSet},
-	path::PathBuf,
-	rc::Rc,
-	str::FromStr,
-};
-
 use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
 use directories::BaseDirs;
 use frame_metadata::{
@@ -37,6 +29,14 @@ use sp_core::{
 	ByteArray, U256,
 };
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
+use std::sync::Arc;
+use std::{
+	any::TypeId,
+	collections::{BTreeMap, BTreeSet, HashSet},
+	path::PathBuf,
+	rc::Rc,
+	str::FromStr,
+};
 use tokio::sync::Notify;
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
@@ -1485,7 +1485,7 @@ pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 /// ```text
 /// cql.chain("ws://localhost:9944")
 /// ```
-pub fn chain(url: String, opts: Option<ChainOpts>, cancel: Rc<Notify>) -> Result<ObjValue> {
+pub fn chain(url: String, opts: Option<ChainOpts>, cancel: Arc<Notify>) -> Result<ObjValue> {
 	let opts = opts.unwrap_or_default();
 	let client = ClientShared::new(url, cancel).map_err(client::Error::Live)?;
 	let mut obj = ObjValueBuilder::new();

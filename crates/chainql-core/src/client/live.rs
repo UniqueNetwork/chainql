@@ -6,6 +6,7 @@ use parity_scale_codec::Decode;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc, result};
 use thiserror::Error;
 use tokio::runtime::Handle;
@@ -63,13 +64,13 @@ pub trait SubstrateRpc {
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
-	cancel: Rc<Notify>,
+	cancel: Arc<Notify>,
 	#[trace(skip)]
 	real: Rc<WsClient>,
 }
 
 impl ClientShared {
-	pub fn new(url: impl AsRef<str>, cancel: Rc<Notify>) -> Result<Self> {
+	pub fn new(url: impl AsRef<str>, cancel: Arc<Notify>) -> Result<Self> {
 		let uri: hyper::Uri = url.as_ref().parse()?;
 		let mut uri = uri.into_parts();
 		let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
@@ -119,7 +120,7 @@ impl ClientShared {
 #[derive(Clone, Trace)]
 pub struct LiveClient {
 	#[trace(skip)]
-	cancel: Rc<Notify>,
+	cancel: Arc<Notify>,
 	#[trace(skip)]
 	real: Rc<WsClient>,
 	#[trace(skip)]
