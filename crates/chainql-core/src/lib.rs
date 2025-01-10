@@ -37,6 +37,7 @@ use sp_core::{
 	ByteArray, U256,
 };
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
+use tokio::sync::Notify;
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
 use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
@@ -1470,6 +1471,11 @@ pub struct ChainOpts {
 	pub include_defaults: bool,
 }
 
+#[builtin]
+pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+	chain(url, opts, Default::default())
+}
+
 /// Get chain data from a URL, including queryable storage, metadata, and blocks.
 ///
 /// This function is passed to Jsonnet and is callable from the code.
@@ -1479,10 +1485,9 @@ pub struct ChainOpts {
 /// ```text
 /// cql.chain("ws://localhost:9944")
 /// ```
-#[builtin]
-pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+pub fn chain(url: String, opts: Option<ChainOpts>, cancel: Rc<Notify>) -> Result<ObjValue> {
 	let opts = opts.unwrap_or_default();
-	let client = ClientShared::new(url).map_err(client::Error::Live)?;
+	let client = ClientShared::new(url, cancel).map_err(client::Error::Live)?;
 	let mut obj = ObjValueBuilder::new();
 	obj.method(
 		"block",
@@ -1493,7 +1498,7 @@ pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 	);
 	obj.field("latest")
 		.hide()
-        .thunk(simple_thunk!{
+		.thunk(simple_thunk!{
             let client: ClientShared = client;
             let opts: ChainOpts = opts;
             Thunk::<Val>::evaluated(Val::Obj(make_block(Client::new(client.block(None).map_err(client::Error::Live)?), opts)?))
@@ -1503,12 +1508,12 @@ pub fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
 
 #[builtin]
 pub fn builtin_twox128_of_string(data: IStr) -> Hex {
-	Hex(sp_core::twox_128(data.as_bytes()).into())
+	Hex(twox_128(data.as_bytes()).into())
 }
 
 #[builtin]
 pub fn builtin_twox128(data: Hex) -> Hex {
-	Hex(sp_core::twox_128(&data).into())
+	Hex(twox_128(&data).into())
 }
 
 #[builtin]

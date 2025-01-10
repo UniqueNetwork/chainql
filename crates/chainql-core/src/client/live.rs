@@ -1,15 +1,15 @@
-use std::collections::BTreeMap;
-use std::{cell::RefCell, rc::Rc, result};
-
+use super::ClientT;
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
 use jrsonnet_gcmodule::Trace;
 use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
 use parity_scale_codec::Decode;
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::{cell::RefCell, rc::Rc, result};
 use thiserror::Error;
 use tokio::runtime::Handle;
-
-use super::ClientT;
+use tokio::sync::Notify;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -23,6 +23,8 @@ pub enum Error {
 	BlockHistoryNotSupported,
 	#[error("url: {0}")]
 	UrlParse(#[from] http::uri::InvalidUri),
+	#[error("cancelled")]
+	Cancelled,
 }
 type Result<T, E = Error> = result::Result<T, E>;
 
@@ -61,12 +63,13 @@ pub trait SubstrateRpc {
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
+	cancel: Rc<Notify>,
+	#[trace(skip)]
 	real: Rc<WsClient>,
 }
 
 impl ClientShared {
-	pub fn new(url: impl AsRef<str>) -> Result<Self> {
-		let handle = Handle::current();
+	pub fn new(url: impl AsRef<str>, cancel: Rc<Notify>) -> Result<Self> {
 		let uri: hyper::Uri = url.as_ref().parse()?;
 		let mut uri = uri.into_parts();
 		let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
@@ -87,23 +90,24 @@ impl ClientShared {
 			};
 		}
 		let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
-		let client = handle.block_on(
+		let client = block_on(
+			&cancel,
 			jsonrpsee::ws_client::WsClientBuilder::default()
 				.max_request_size(20 * 1024 * 1024)
 				.max_response_size(20 * 1024 * 1024)
 				.build(uri.to_string()),
 		)?;
 		Ok(Self {
+			cancel,
 			real: Rc::new(client),
 		})
 	}
 	pub fn block(&self, num: Option<u32>) -> Result<LiveClient> {
-		let handle = Handle::current();
-		let block = handle
-			.block_on(self.real.get_block_hash(num))?
+		let block = block_on(&self.cancel, self.real.get_block_hash(num))?
 			.ok_or(Error::BlockNotFound(num))?;
 
 		Ok(LiveClient {
+			cancel: self.cancel.clone(),
 			real: self.real.clone(),
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
@@ -114,6 +118,8 @@ impl ClientShared {
 
 #[derive(Clone, Trace)]
 pub struct LiveClient {
+	#[trace(skip)]
+	cancel: Rc<Notify>,
 	#[trace(skip)]
 	real: Rc<WsClient>,
 	#[trace(skip)]
@@ -143,18 +149,20 @@ impl LiveClient {
 				.collect());
 		}
 
-		let handle = Handle::current();
 		let mut fetched = vec![];
 
 		loop {
 			// Our gate limit
 			const CHUNK: usize = 1000;
-			let chunk = handle.block_on(self.real.get_keys_paged(
-				prefix_str.clone(),
-				CHUNK,
-				fetched.last().cloned(),
-				Some(self.block.as_str().to_owned()),
-			))?;
+			let chunk = block_on(
+				&self.cancel,
+				self.real.get_keys_paged(
+					prefix_str.clone(),
+					CHUNK,
+					fetched.last().cloned(),
+					Some(self.block.as_str().to_owned()),
+				),
+			)?;
 			let has_more = chunk.len() == CHUNK;
 			let len = chunk.len();
 			eprintln!("loaded {len} keys");
@@ -184,8 +192,8 @@ impl LiveClient {
 		eprintln!("loading key {key:0>2x?}");
 		let key_str = format!("0x{}", hex::encode(key));
 
-		let handle = Handle::current();
-		let value = handle.block_on(
+		let value = block_on(
+			&self.cancel,
 			self.real
 				.get_storage(key_str, Some(self.block.as_str().to_owned())),
 		)?;
@@ -230,8 +238,8 @@ impl LiveClient {
 			list.push(key_str);
 		}
 		eprintln!("preloading {} keys", list.len());
-		let handle = Handle::current();
-		let value = handle.block_on(
+		let value = block_on(
+			&self.cancel,
 			self.real
 				.query_storage(list, Some(self.block.as_str().to_owned())),
 		)?;
@@ -257,11 +265,13 @@ impl LiveClient {
 	}
 	pub fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
 		eprintln!("loading metadata");
-		let handle = Handle::current();
-		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_str().to_owned())))?;
+		let meta = block_on(
+			&self.cancel,
+			self.real.get_metadata(Some(self.block.as_str().to_owned())),
+		)?;
 		assert!(meta.starts_with("0x"));
 		let meta = hex::decode(&meta[2..]).expect("decode hex");
-		assert!(&meta[0..4] == b"meta");
+		assert_eq!(&meta[0..4], b"meta");
 		let meta = &meta[4..];
 		let meta = RuntimeMetadata::decode(&mut &meta[..]).expect("decode");
 		if let RuntimeMetadata::V14(v) = meta {
@@ -295,15 +305,28 @@ impl LiveClient {
 		eprintln!("checking for keys under {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
-		let handle = Handle::current();
-		let chunk = handle.block_on(self.real.get_keys_paged(
-			prefix_str,
-			1,
-			None,
-			Some(self.block.as_str().to_owned()),
-		))?;
+		let chunk = block_on(
+			&self.cancel,
+			self.real
+				.get_keys_paged(prefix_str, 1, None, Some(self.block.as_str().to_owned())),
+		)?;
+
 		Ok(!chunk.is_empty())
 	}
+}
+
+#[inline(always)]
+fn block_on<F, T, E>(cancel: &Notify, f: F) -> Result<T>
+where
+	F: Future<Output = Result<T, E>>,
+	E: Into<Error>,
+{
+	Handle::current().block_on(async {
+		tokio::select! {
+			result = f => result.map_err(Into::into),
+			_ = cancel.notified() => Err(Error::Cancelled),
+		}
+	})
 }
 
 impl ClientT for LiveClient {
