@@ -11,6 +11,7 @@ use std::{cell::RefCell, rc::Rc, result};
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
+use crate::log::{debug, error, info};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -132,7 +133,7 @@ pub struct LiveClient {
 }
 impl LiveClient {
 	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-		eprintln!("loading keys by prefix {prefix:0>2x?}");
+		info!("loading keys by prefix {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		if self
@@ -166,10 +167,10 @@ impl LiveClient {
 			)?;
 			let has_more = chunk.len() == CHUNK;
 			let len = chunk.len();
-			eprintln!("loaded {len} keys");
+			info!("loaded {len} keys");
 			fetched.extend(chunk);
 			if !has_more {
-				eprintln!("loaded keys, last chunk was {len}");
+				info!("loaded keys, last chunk was {len}");
 				break;
 			}
 		}
@@ -190,7 +191,7 @@ impl LiveClient {
 		if cache.contains_key(key) {
 			return Ok(cache.get(key).expect("cached").clone());
 		}
-		eprintln!("loading key {key:0>2x?}");
+		info!("loading key {key:0>2x?}");
 		let key_str = format!("0x{}", hex::encode(key));
 
 		let value = block_on(
@@ -238,7 +239,7 @@ impl LiveClient {
 			let key_str = format!("0x{}", hex::encode(key));
 			list.push(key_str);
 		}
-		eprintln!("preloading {} keys", list.len());
+		info!("preloading {} keys", list.len());
 		let value = block_on(
 			&self.cancel,
 			self.real
@@ -265,7 +266,7 @@ impl LiveClient {
 		Ok(())
 	}
 	pub fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
-		eprintln!("loading metadata");
+		debug!("loading metadata");
 		let meta = block_on(
 			&self.cancel,
 			self.real.get_metadata(Some(self.block.as_str().to_owned())),
@@ -303,7 +304,7 @@ impl LiveClient {
 			}
 			return Ok(false);
 		}
-		eprintln!("checking for keys under {prefix:0>2x?}");
+		debug!("checking for keys under {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		let chunk = block_on(

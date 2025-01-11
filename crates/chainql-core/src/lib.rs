@@ -58,6 +58,7 @@ pub mod ethereum;
 pub mod hex;
 pub mod rebuild;
 pub mod wasm;
+mod log;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
