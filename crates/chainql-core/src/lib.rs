@@ -5,15 +5,15 @@ use frame_metadata::{
 	StorageEntryModifier, StorageEntryType, StorageHasher,
 };
 use hex::{builtin_from_hex, builtin_to_hex, Hex};
+use jrsonnet_evaluator::val::NumValue;
 use jrsonnet_evaluator::{
 	bail,
 	error::{Error as JrError, Result},
 	function::builtin,
-	runtime_error,
+	in_description_frame, runtime_error,
 	typed::{Either2, NativeFn, Typed},
 	val::{ArrValue, ThunkValue},
-	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, State, Thunk,
-	Val,
+	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, Thunk, Val,
 };
 use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
@@ -56,9 +56,9 @@ pub mod address;
 mod client;
 pub mod ethereum;
 pub mod hex;
+mod log;
 pub mod rebuild;
 pub mod wasm;
-mod log;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
@@ -167,7 +167,7 @@ where
 			.clone()
 			.unwrap_or_else(|| format!("unnamed{}", i))
 			.into();
-		State::push_description(
+		in_description_frame(
 			|| format!(".{field_name}"),
 			|| {
 				let field = val
@@ -724,7 +724,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			let c: MapFetcherContext = c;
 			Thunk::<Val>::evaluated(make_fetched_keys_storage(c)?)
 		};
-		out.field(value.clone()).thunk(bound)?;
+		out.field(value.clone()).try_thunk(bound)?;
 	}
 	let preload_keys = simple_thunk! {
 		let shared: Rc<SharedMapFetcherContext> = c.shared;
@@ -737,7 +737,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			Val::Obj(pending_out.unwrap())
 		})
 	};
-	out.field("_preloadKeys").hide().thunk(preload_keys)?;
+	out.field("_preloadKeys").hide().try_thunk(preload_keys)?;
 	out.field("_key").hide().try_value(keyout.build())?;
 	let out = out.build();
 	pending_out.fill(out.clone());
@@ -836,7 +836,7 @@ fn make_pallet_key(
 					continue;
 				}
 
-				out.field(entry.name.clone()).thunk(simple_thunk! {
+				out.field(entry.name.clone()).try_thunk(simple_thunk! {
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
@@ -876,9 +876,9 @@ fn make_pallet_key(
 				)?;
 				key_args
 					.field(entry.name.clone())
-					.try_value(Val::Num(keys.len() as f64))?;
+					.try_value(Val::Num(NumValue::new(keys.len() as f64).unwrap()))?;
 
-				out.field(entry.name.clone()).thunk(simple_thunk! {
+				out.field(entry.name.clone()).try_thunk(simple_thunk! {
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
@@ -901,7 +901,7 @@ fn make_pallet_key(
 			}
 		}
 	}
-	out.field("_unknown").thunk(simple_thunk! {
+	out.field("_unknown").try_thunk(simple_thunk! {
 		let client: Client = client.clone();
 		let known_prefixes: Vec<Vec<u8>> = known_prefixes;
 		let pallet_key: Vec<u8> = pallet_key.to_vec();
@@ -953,7 +953,7 @@ fn make_unknown_key(client: Client, prefix: &[u8], known: &[&Vec<u8>]) -> Result
 			let client: Client = client.clone();
 			Thunk::<Val>::evaluated(fetch_raw(key, client)?)
 		};
-		out.field(key_str).thunk(value)?;
+		out.field(key_str).try_thunk(value)?;
 	}
 	// TODO: key filter?
 	let preload_keys = simple_thunk! {
@@ -966,7 +966,7 @@ fn make_unknown_key(client: Client, prefix: &[u8], known: &[&Vec<u8>]) -> Result
 			Val::Obj(pending_out.unwrap())
 		})
 	};
-	out.field("_preloadKeys").hide().thunk(preload_keys)?;
+	out.field("_preloadKeys").hide().try_thunk(preload_keys)?;
 	let out = out.build();
 	pending_out.fill(out.clone());
 	Ok(out)
@@ -1389,7 +1389,7 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 				continue;
 			}
 		}
-		out.field(pallet.name.clone()).thunk(simple_thunk! {
+		out.field(pallet.name.clone()).try_thunk(simple_thunk! {
 			let client: Client = client.clone();
 			#[trace(skip)]
 			let pallet: PalletMetadata<PortableForm> = pallet.clone();
@@ -1398,14 +1398,14 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 			Thunk::<Val>::evaluated(Val::Obj(make_pallet_key(client, pallet, reg, opts)?))
 		})?;
 	}
-	out.field("_raw").hide().thunk(simple_thunk! {
+	out.field("_raw").hide().try_thunk(simple_thunk! {
 		let client: Client = client.clone();
 		Thunk::<Val>::evaluated(Val::Obj(make_unknown_key(client, &[], &[])?))
 	})?;
 	let meta_key = metadata_obj(&meta);
 	out.field("_meta").hide().try_value(meta_key)?;
 	let meta = Rc::new(meta);
-	out.field("_unknown").thunk(simple_thunk! {
+	out.field("_unknown").try_thunk(simple_thunk! {
 		let client: Client = client.clone();
 		#[trace(skip)]
 		let meta: Rc<RuntimeMetadataV14> = meta.clone();
@@ -1439,7 +1439,7 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 			Val::Obj(pending_out.unwrap())
 		})
 	};
-	out.field("_preloadKeys").hide().thunk(preload_keys)?;
+	out.field("_preloadKeys").hide().try_thunk(preload_keys)?;
 	let out = out.build();
 	pending_out.fill(out.clone());
 	Ok(out)
@@ -1499,7 +1499,7 @@ pub fn chain(url: String, opts: Option<ChainOpts>, cancel: Arc<Notify>) -> Resul
 	);
 	obj.field("latest")
 		.hide()
-		.thunk(simple_thunk!{
+		.try_thunk(simple_thunk!{
             let client: ClientShared = client;
             let opts: ChainOpts = opts;
             Thunk::<Val>::evaluated(Val::Obj(make_block(Client::new(client.block(None).map_err(client::Error::Live)?), opts)?))

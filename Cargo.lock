@@ -100,6 +100,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "annotate-snippets"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9b665789884a7e8fb06c84b295e923b03ca51edbb7d08f91a6a50322ecbfe6"
+dependencies = [
+ "anstyle",
+ "unicode-width",
+]
+
+[[package]]
 name = "ansi_term"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -542,7 +552,7 @@ dependencies = [
  "chainql-core",
  "clap",
  "jrsonnet-cli",
- "jrsonnet-evaluator",
+ "jrsonnet-evaluator 0.5.0-pre95",
  "jrsonnet-stdlib",
  "tokio",
 ]
@@ -557,8 +567,8 @@ dependencies = [
  "hex",
  "http",
  "hyper",
- "jrsonnet-evaluator",
- "jrsonnet-gcmodule",
+ "jrsonnet-evaluator 0.5.0-pre96",
+ "jrsonnet-gcmodule 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
  "jsonrpsee",
  "libsecp256k1",
  "log",
@@ -1549,6 +1559,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "212ab92002354b4819390025006c897e8140934349e8635c9b077f47b4dcbd20"
 
 [[package]]
+name = "hi-doc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2390a0c9be1370168ef9557833bad3bfa37e1720df61d7f7034f18c07b4e006"
+dependencies = [
+ "num-traits",
+ "rand",
+ "random_color",
+ "range-map",
+ "smallvec",
+]
+
+[[package]]
 name = "hmac"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1917,9 +1940,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adcdbb712f233b3ef7bd533643aa494431cc28023b051433bb35a87cded6e7df"
 dependencies = [
  "clap",
- "jrsonnet-evaluator",
- "jrsonnet-gcmodule",
- "jrsonnet-parser",
+ "jrsonnet-evaluator 0.5.0-pre95",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jrsonnet-parser 0.5.0-pre95",
  "jrsonnet-stdlib",
 ]
 
@@ -1929,14 +1952,14 @@ version = "0.5.0-pre95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0951f206ee982ef3c61ed49c2779b3649858d2b7c6748943e4c7f36f6df55f9c"
 dependencies = [
- "annotate-snippets",
+ "annotate-snippets 0.9.2",
  "derivative",
  "hashbrown 0.13.2",
- "jrsonnet-gcmodule",
- "jrsonnet-interner",
- "jrsonnet-macros",
- "jrsonnet-parser",
- "jrsonnet-types",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jrsonnet-interner 0.5.0-pre95",
+ "jrsonnet-macros 0.5.0-pre95",
+ "jrsonnet-parser 0.5.0-pre95",
+ "jrsonnet-types 0.5.0-pre95",
  "num-bigint",
  "pathdiff",
  "rustc-hash",
@@ -1947,12 +1970,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "jrsonnet-evaluator"
+version = "0.5.0-pre96"
+source = "git+https://github.com/vklachkov/jrsonnet.git?branch=patched-gcmodule#44df968bc7dd7c4d8796b0cc54dbf3f940314603"
+dependencies = [
+ "annotate-snippets 0.10.2",
+ "hashbrown 0.14.5",
+ "hi-doc",
+ "jrsonnet-gcmodule 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
+ "jrsonnet-interner 0.5.0-pre96",
+ "jrsonnet-macros 0.5.0-pre96",
+ "jrsonnet-parser 0.5.0-pre96",
+ "jrsonnet-types 0.5.0-pre96",
+ "num-bigint",
+ "pathdiff",
+ "rustc-hash",
+ "serde",
+ "stacker",
+ "static_assertions",
+ "strsim 0.11.1",
+ "thiserror",
+]
+
+[[package]]
 name = "jrsonnet-gcmodule"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47975473b24b4503acee0d449fd5eda04ae18828f9811828a6cc99abbbbc38c8"
 dependencies = [
- "jrsonnet-gcmodule-derive",
+ "jrsonnet-gcmodule-derive 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot",
+]
+
+[[package]]
+name = "jrsonnet-gcmodule"
+version = "0.3.7"
+source = "git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free#d330603ca690b9fe5dceec7172a5526457fe196e"
+dependencies = [
+ "jrsonnet-gcmodule-derive 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
  "parking_lot",
 ]
 
@@ -1968,15 +2023,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "jrsonnet-gcmodule-derive"
+version = "0.3.7"
+source = "git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free#d330603ca690b9fe5dceec7172a5526457fe196e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.66",
+]
+
+[[package]]
 name = "jrsonnet-interner"
 version = "0.5.0-pre95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d2332eb6c0bbd27e81ed8ad488a70e448437dd17b54e90cf3b8974b82c3c379"
 dependencies = [
  "hashbrown 0.13.2",
- "jrsonnet-gcmodule",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-hash",
  "structdump",
+]
+
+[[package]]
+name = "jrsonnet-interner"
+version = "0.5.0-pre96"
+source = "git+https://github.com/vklachkov/jrsonnet.git?branch=patched-gcmodule#44df968bc7dd7c4d8796b0cc54dbf3f940314603"
+dependencies = [
+ "hashbrown 0.14.5",
+ "jrsonnet-gcmodule 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -1991,16 +2066,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "jrsonnet-macros"
+version = "0.5.0-pre96"
+source = "git+https://github.com/vklachkov/jrsonnet.git?branch=patched-gcmodule#44df968bc7dd7c4d8796b0cc54dbf3f940314603"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.66",
+ "syn-dissect-closure",
+]
+
+[[package]]
 name = "jrsonnet-parser"
 version = "0.5.0-pre95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d403645f250bdc8f31a2a142ebd4608f9595bdad1a89db871ccdfe81c427957"
 dependencies = [
- "jrsonnet-gcmodule",
- "jrsonnet-interner",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jrsonnet-interner 0.5.0-pre95",
  "peg",
  "static_assertions",
  "structdump",
+]
+
+[[package]]
+name = "jrsonnet-parser"
+version = "0.5.0-pre96"
+source = "git+https://github.com/vklachkov/jrsonnet.git?branch=patched-gcmodule#44df968bc7dd7c4d8796b0cc54dbf3f940314603"
+dependencies = [
+ "jrsonnet-gcmodule 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
+ "jrsonnet-interner 0.5.0-pre96",
+ "peg",
+ "static_assertions",
 ]
 
 [[package]]
@@ -2010,10 +2107,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99d7f31ed348ea5f7dfb379ddc65fe1773d82cab7698a8dbc4d2d72013795eba"
 dependencies = [
  "base64 0.21.7",
- "jrsonnet-evaluator",
- "jrsonnet-gcmodule",
- "jrsonnet-macros",
- "jrsonnet-parser",
+ "jrsonnet-evaluator 0.5.0-pre95",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jrsonnet-macros 0.5.0-pre95",
+ "jrsonnet-parser 0.5.0-pre95",
  "md5",
  "num-bigint",
  "serde",
@@ -2031,7 +2128,16 @@ version = "0.5.0-pre95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68522259250172a8aa3714e2f99466641cc450b5c758fbdaa05265f86c1e0d97"
 dependencies = [
- "jrsonnet-gcmodule",
+ "jrsonnet-gcmodule 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "peg",
+]
+
+[[package]]
+name = "jrsonnet-types"
+version = "0.5.0-pre96"
+source = "git+https://github.com/vklachkov/jrsonnet.git?branch=patched-gcmodule#44df968bc7dd7c4d8796b0cc54dbf3f940314603"
+dependencies = [
+ "jrsonnet-gcmodule 0.3.7 (git+https://github.com/vklachkov/gcmodule.git?branch=fix-double-free)",
  "peg",
 ]
 
@@ -2822,6 +2928,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
+]
+
+[[package]]
+name = "random_color"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0085421bc527effa7ed6d46bac0a28734663c47abe03d80a5e78e441fad85196"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "range-map"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12a5a2d6c7039059af621472a4389be1215a816df61aa4d531cfe85264aee95f"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -4007,6 +4131,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
+name = "stacker"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c886bd4480155fd3ef527d45e9ac8dd7118a898a46530b7b94c3e21866259fce"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "winapi",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4163,6 +4300,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syn-dissect-closure"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "343bae741672e4b94421cbe93f9794ba9a061434272f7e3a29ff43be26be3ac9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.66",
 ]
 
 [[package]]

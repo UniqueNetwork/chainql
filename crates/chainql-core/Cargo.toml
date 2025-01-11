@@ -9,8 +9,8 @@ repository.workspace = true
 [dependencies]
 frame-metadata.workspace = true
 tokio.workspace = true
-jrsonnet-evaluator.workspace = true
-jrsonnet-gcmodule.workspace = true
+jrsonnet-evaluator = { git = "https://github.com/vklachkov/jrsonnet.git", branch = "patched-gcmodule", features = ["exp-bigint", "exp-preserve-order"] }
+jrsonnet-gcmodule = { git = "https://github.com/vklachkov/gcmodule.git", branch = "fix-double-free" }
 hex = "0.4.3"
 jsonrpsee = { version = "0.23.1", features = ["macros", "ws-client"] }
 parity-scale-codec = { version = "3.6.12", features = ["derive"] }
