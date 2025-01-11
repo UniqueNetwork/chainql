@@ -4,6 +4,8 @@ use clap::Parser;
 use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
 use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State};
 use tokio::runtime::Handle;
+use tracing::error;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// chainql
 #[derive(Parser)]
@@ -64,16 +66,22 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
 }
 
 fn main_sync() {
+	tracing_subscriber::fmt()
+		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+		.with_writer(std::io::stderr)
+		.finish()
+		.init();
+
 	let s = State::default();
 	let opts = Opts::parse();
 	let trace_format = opts.trace.trace_format();
 	match main_jrsonnet(s, opts) {
-		Ok(e) => {
-			println!("{e}");
+		Ok(result) => {
+			println!("{result}");
 			process::exit(0)
 		}
 		Err(e) => {
-			eprintln!("{}", trace_format.format(&e).unwrap());
+			error!("{}", trace_format.format(&e).unwrap());
 			process::exit(1)
 		}
 	}
