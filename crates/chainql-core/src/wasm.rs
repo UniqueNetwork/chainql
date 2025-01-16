@@ -69,7 +69,10 @@ impl RuntimeContainer {
 		Ok(RuntimeVersion {
 			spec_name: version.spec_name.to_string(),
 			spec_version: version.spec_version,
-			state_version: version.state_version,
+			state_version: match version.state_version() {
+				sp_runtime::StateVersion::V0 => 0,
+				sp_runtime::StateVersion::V1 => 1,
+			},
 			transaction_version: version.transaction_version,
 		})
 	}
