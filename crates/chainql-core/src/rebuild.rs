@@ -7,8 +7,8 @@ use frame_metadata::{
 use jrsonnet_evaluator::{bail, typed::Typed, ObjValue, Result, ResultExt, Val};
 use scale_info::{form::PortableForm, interner::UntrackedSymbol, PortableRegistry};
 use sp_core::twox_128;
-
-use crate::{encode_single_key, encode_value, hex::Hex, normalize_storage_map_keys};
+use tracing::info;
+use crate::{log::*, encode_single_key, encode_value, hex::Hex, normalize_storage_map_keys};
 
 struct StorageBuilder {
 	prefix_lens: Vec<usize>,
@@ -74,7 +74,7 @@ fn rebuild_inner(
 		let data = ObjValue::from_untyped(data)?;
 		handled_prefixes.push(pallet_prefix);
 		out.push_prefix(&pallet_prefix);
-		eprintln!("rebuilding pallet {}", storage.prefix);
+		info!(target: LOG_TARGET, "rebuilding pallet `{}`...", storage.prefix);
 		rebuild_pallet(data, out, &meta.types, storage)
 			.with_description(|| format!("pallet <{key}> rebuild"))?;
 		out.pop_prefix()
@@ -137,7 +137,7 @@ fn rebuild_storage_entry(
 			key,
 			value,
 		} => {
-			eprintln!("rebuilding storage {}", meta.name);
+			info!(target: LOG_TARGET, "rebuilding storage `{}`...", meta.name);
 			let keys = normalize_storage_map_keys(reg, *key, hashers)?;
 			rebuild_storage(data, out, reg, &keys, *value, 0)
 		}

@@ -13,3 +13,5 @@ tokio.workspace = true
 jrsonnet-evaluator.workspace = true
 jrsonnet-stdlib.workspace = true
 jrsonnet-cli.workspace = true
+tracing-subscriber = "0.2.25"
+tracing = "0.1.41"

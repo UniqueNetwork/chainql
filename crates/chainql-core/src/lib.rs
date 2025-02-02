@@ -39,7 +39,10 @@ use sp_core::{
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
 
-use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
+use crate::{
+	address::{verify_signature, AddressSchema, AddressType, Ss58Format},
+	log::*,
+};
 
 use self::{
 	address::{
@@ -57,6 +60,7 @@ pub mod ethereum;
 pub mod hex;
 pub mod rebuild;
 pub mod wasm;
+mod log;
 
 /// Translate metadata into Jrsonnet's Val.
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
@@ -729,7 +733,8 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 		let prefix: Rc<Vec<u8>> = c.prefix;
 		let pending_out: Pending<ObjValue> = pending_out.clone();
 		Thunk::<Val>::evaluated({
-			eprintln!("preloading subset of keys by prefix: {prefix:0>2x?}");
+			let prefix_str = format!("0x{}", ::hex::encode(prefix.as_slice()));
+			info!(target: LOG_TARGET, "preloading subset of keys by prefix `{prefix_str}`...");
 			let prefixes = shared.fetched.iter().filter(|k| k.starts_with(&prefix)).collect::<Vec<_>>();
 			shared.client.preload_storage(prefixes.as_slice())?;
 			Val::Obj(pending_out.unwrap())
@@ -959,7 +964,7 @@ fn make_unknown_key(client: Client, prefix: &[u8], known: &[&Vec<u8>]) -> Result
 		let client: Client = client;
 		let fetched: Vec<Vec<u8>> = fetched;
 		Thunk::<Val>::evaluated({
-			eprintln!("preloading all storage keys");
+			info!(target: LOG_TARGET, "preloading all storage keys");
 			client.preload_storage(&fetched.iter().collect::<Vec<_>>())?;
 			Val::Obj(pending_out.unwrap())
 		})
@@ -1431,7 +1436,7 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 		let pending_out: Pending<ObjValue> = pending_out.clone();
 		let client: Client = client.clone();
 		Thunk::<Val>::evaluated({
-			eprintln!("preloading all keys");
+			info!(target: LOG_TARGET, "preloading all keys...");
 			let keys = client.get_keys(&[])?;
 			client.preload_storage(keys.iter().collect::<Vec<_>>().as_slice())?;
 			Val::Obj(pending_out.unwrap())

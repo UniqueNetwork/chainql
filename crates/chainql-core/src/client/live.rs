@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::{cell::RefCell, rc::Rc, result};
 
+use crate::client::ClientT;
+use crate::log::*;
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
 use jrsonnet_gcmodule::Trace;
 use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
@@ -8,8 +10,6 @@ use parity_scale_codec::Decode;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::runtime::Handle;
-
-use super::ClientT;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -125,8 +125,8 @@ pub struct LiveClient {
 }
 impl LiveClient {
 	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-		eprintln!("loading keys by prefix {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
+		info!(target: LOG_TARGET, "loading keys by prefix `{prefix_str}`...");
 
 		if self
 			.fetched_prefixes
@@ -155,12 +155,16 @@ impl LiveClient {
 				fetched.last().cloned(),
 				Some(self.block.as_str().to_owned()),
 			))?;
-			let has_more = chunk.len() == CHUNK;
-			let len = chunk.len();
-			eprintln!("loaded {len} keys");
+
+			let chunk_len = chunk.len();
+			let total = fetched.len() + chunk_len;
+
 			fetched.extend(chunk);
+			info!(target: LOG_TARGET, "loaded {chunk_len} keys (total {total})");
+
+			let has_more = chunk_len == CHUNK;
 			if !has_more {
-				eprintln!("loaded keys, last chunk was {len}");
+				info!(target: LOG_TARGET, "{total} keys successfully loaded");
 				break;
 			}
 		}
@@ -178,11 +182,12 @@ impl LiveClient {
 	}
 	pub fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
 		let mut cache = self.key_value_cache.borrow_mut();
-		if cache.contains_key(key) {
-			return Ok(cache.get(key).expect("cached").clone());
+		if let Some(cached) = cache.get(key).cloned() {
+			return Ok(cached);
 		}
-		eprintln!("loading key {key:0>2x?}");
+
 		let key_str = format!("0x{}", hex::encode(key));
+		info!(target: LOG_TARGET, "loading key `{key_str}`");
 
 		let handle = Handle::current();
 		let value = handle.block_on(
@@ -201,25 +206,31 @@ impl LiveClient {
 		Ok(value)
 	}
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
+		info!(target: LOG_TARGET, "preloading storage...");
+
+		let mut left = keys.len();
 		for chunk in keys.chunks(30000) {
-			self.preload_storage_fallback(chunk)?;
+			left -= self.preload_storage_fallback(chunk, left)?;
 		}
+
 		Ok(())
 	}
-	fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		let chunk_size = keys.len();
-		match self.preload_storage_naive(keys) {
-			Ok(()) => Ok(()),
+	fn preload_storage_fallback(&self, keys: &[&Vec<u8>], left: usize) -> Result<usize> {
+		match self.preload_storage_naive(keys, left) {
+			Ok(keys_loaded) => Ok(keys_loaded),
 			Err(Error::Rpc(jsonrpsee::core::ClientError::Call(c))) if c.code() == -32702 => {
-				let (keysa, keysb) = keys.split_at(chunk_size / 2);
-				self.preload_storage_fallback(keysa)?;
-				self.preload_storage_fallback(keysb)?;
-				Ok(())
+				let chunk_size = keys.len() / 2;
+				let (keysa, keysb) = keys.split_at(chunk_size);
+
+				let mut keys_loaded = 0;
+				keys_loaded += self.preload_storage_fallback(keysa, left)?;
+				keys_loaded += self.preload_storage_fallback(keysb, left - keys_loaded)?;
+				Ok(keys_loaded)
 			}
 			Err(e) => Err(e),
 		}
 	}
-	fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
+	fn preload_storage_naive(&self, keys: &[&Vec<u8>], left: usize) -> Result<usize> {
 		let mut cache = self.key_value_cache.borrow_mut();
 		let mut list = Vec::new();
 		for key in keys {
@@ -229,15 +240,21 @@ impl LiveClient {
 			let key_str = format!("0x{}", hex::encode(key));
 			list.push(key_str);
 		}
-		eprintln!("preloading {} keys", list.len());
+
+		let keys_count = list.len();
+		let left = left - keys_count;
+
 		let handle = Handle::current();
 		let value = handle.block_on(
 			self.real
 				.query_storage(list, Some(self.block.as_str().to_owned())),
 		)?;
 		if value.is_empty() {
-			return Ok(());
+			return Ok(0);
 		}
+
+		info!(target: LOG_TARGET, "preloaded {keys_count} keys ({left} left)");
+
 		assert!(value.len() == 1);
 		let value = &value[0].changes;
 		for (key, value) in value {
@@ -253,15 +270,16 @@ impl LiveClient {
 				cache.insert(key, None);
 			}
 		}
-		Ok(())
+
+		Ok(keys_count)
 	}
 	pub fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
-		eprintln!("loading metadata");
+		info!(target: LOG_TARGET, "loading metadata...");
 		let handle = Handle::current();
 		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_str().to_owned())))?;
 		assert!(meta.starts_with("0x"));
 		let meta = hex::decode(&meta[2..]).expect("decode hex");
-		assert!(&meta[0..4] == b"meta");
+		assert_eq!(&meta[0..4], b"meta");
 		let meta = &meta[4..];
 		let meta = RuntimeMetadata::decode(&mut &meta[..]).expect("decode");
 		if let RuntimeMetadata::V14(v) = meta {
@@ -292,8 +310,9 @@ impl LiveClient {
 			}
 			return Ok(false);
 		}
-		eprintln!("checking for keys under {prefix:0>2x?}");
+
 		let prefix_str = format!("0x{}", hex::encode(prefix));
+		info!(target: LOG_TARGET, "checking for keys under `{prefix_str}`...");
 
 		let handle = Handle::current();
 		let chunk = handle.block_on(self.real.get_keys_paged(
