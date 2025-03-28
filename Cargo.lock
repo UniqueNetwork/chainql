@@ -528,6 +528,7 @@ dependencies = [
  "chainql-frame-metadata",
  "cumulus-primitives-proof-size-hostfunction",
  "directories",
+ "futures",
  "hex",
  "http",
  "hyper",

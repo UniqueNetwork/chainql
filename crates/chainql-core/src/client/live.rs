@@ -1,8 +1,10 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::vec::Vec;
 use std::{cell::RefCell, rc::Rc, result};
 
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
+use futures::{FutureExt, StreamExt, TryStreamExt as _};
 use jrsonnet_evaluator::bail;
 use jrsonnet_gcmodule::Trace;
 use jsonrpsee::core::ClientError;
@@ -142,8 +144,29 @@ pub struct LiveClient {
 
 	learned_max_chunk_size: Cell<usize>,
 }
+
+#[derive(Default)]
+pub struct Key(Vec<u8>);
+
 impl LiveClient {
-	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Key>> {
+		let handle = Handle::current();
+		if prefix.is_empty() {
+			let prefixes: Vec<u8> = (0u8..=255).collect();
+			let mut futures = vec![];
+			for p in &prefixes {
+				futures.push(self.get_keys_naive(std::slice::from_ref(p)));
+			}
+			handle.block_on(
+				futures::stream::iter(futures)
+					.buffer_unordered(16)
+					.try_concat(),
+			)
+		} else {
+			handle.block_on(self.get_keys_naive(prefix))
+		}
+	}
+	pub async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		if self
@@ -157,21 +180,24 @@ impl LiveClient {
 				.borrow()
 				.keys()
 				.filter(|k| k.starts_with(prefix))
-				.map(|k| k.to_vec())
+				.map(|k| Key(k.to_vec()))
 				.collect());
 		}
 		eprintln!("loading keys by prefix {prefix_str}");
 
-		let handle = Handle::current();
+		// let handle = Handle::current();
 		let mut fetched = vec![];
 
 		loop {
-			let chunk_result = handle.block_on(self.real.get_keys_paged(
-				prefix_str.clone(),
-				self.learned_max_chunk_size.get(),
-				fetched.last().cloned(),
-				Some(self.block.as_str().to_owned()),
-			));
+			let chunk_result = self
+				.real
+				.get_keys_paged(
+					prefix_str.clone(),
+					self.learned_max_chunk_size.get(),
+					fetched.last().cloned(),
+					Some(self.block.as_str().to_owned()),
+				)
+				.await;
 			let chunk = match chunk_result {
 				Ok(v) => v,
 				Err(ClientError::Call(c)) if c.code() == 4002 => {
@@ -193,10 +219,14 @@ impl LiveClient {
 
 			let has_more = chunk.len() == self.learned_max_chunk_size.get();
 			let len = chunk.len();
-			eprintln!("loaded {len} keys");
+			if len != 0 {
+				eprintln!("loaded {len} keys for pref {}", prefix_str);
+			}
 			fetched.extend(chunk);
 			if !has_more {
-				eprintln!("loaded keys, last chunk was {len}");
+				if !fetched.is_empty() {
+					eprintln!("loaded keys, last chunk was {len}");
+				}
 				break;
 			}
 		}
@@ -207,9 +237,9 @@ impl LiveClient {
 			.iter()
 			.map(|k| {
 				assert!(k.starts_with("0x"));
-				hex::decode(&k[2..]).expect("hex")
+				Key(hex::decode(&k[2..]).expect("hex"))
 			})
-			.collect::<Vec<Vec<u8>>>();
+			.collect::<Vec<Key>>();
 		Ok(fetched)
 	}
 	pub fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -217,8 +247,8 @@ impl LiveClient {
 		if cache.contains_key(key) {
 			return Ok(cache.get(key).expect("cached").clone());
 		}
-		eprintln!("loading key {key:0>2x?}");
 		let key_str = format!("0x{}", hex::encode(key));
+		eprintln!("loading key {key_str}");
 
 		let handle = Handle::current();
 		let value = handle.block_on(
@@ -237,45 +267,58 @@ impl LiveClient {
 		Ok(value)
 	}
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		for chunk in keys.chunks(60000) {
-			self.preload_storage_fallback(chunk)?;
-		}
+		let handle = Handle::current();
+		handle.block_on(
+			futures::stream::iter(
+				keys.chunks(60000)
+					.map(|slice| self.preload_storage_fallback(slice)),
+			)
+			.buffer_unordered(16)
+			.try_collect::<()>(),
+		)?;
+		// for chunk in  {
+		// 	self.preload_storage_fallback(chunk)?;
+		// }
 		Ok(())
 	}
-	fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
+	async fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
 		let chunk_size = keys.len();
-		match self.preload_storage_naive(keys) {
+		match self.preload_storage_naive(keys).await {
 			Ok(()) => Ok(()),
 			Err(Error::Rpc(ClientError::Call(c))) if c.code() == -32702 || c.code() == -32008 => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
-				self.preload_storage_fallback(keysa)?;
-				self.preload_storage_fallback(keysb)?;
+				self.preload_storage_fallback(keysa).boxed_local().await?;
+				self.preload_storage_fallback(keysb).boxed_local().await?;
 				Ok(())
 			}
 			Err(e) => Err(e),
 		}
 	}
-	fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		let mut cache = self.key_value_cache.borrow_mut();
+	async fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
 		let mut list = Vec::new();
-		for key in keys {
-			if cache.contains_key(key.as_slice()) {
-				continue;
+		{
+			let cache = self.key_value_cache.borrow_mut();
+			for key in keys {
+				if cache.contains_key(key.as_slice()) {
+					continue;
+				}
+				let key_str = format!("0x{}", hex::encode(key));
+				list.push(key_str);
 			}
-			let key_str = format!("0x{}", hex::encode(key));
-			list.push(key_str);
+			drop(cache);
 		}
 		eprintln!("preloading {} keys", list.len());
-		let handle = Handle::current();
-		let value = handle.block_on(
-			self.real
-				.query_storage(list, Some(self.block.as_str().to_owned())),
-		)?;
+		// let handle = Handle::current();
+		let value = self
+			.real
+			.query_storage(list, Some(self.block.as_str().to_owned()))
+			.await?;
 		if value.is_empty() {
 			return Ok(());
 		}
 		assert!(value.len() == 1);
 		let value = &value[0].changes;
+		let mut cache = self.key_value_cache.borrow_mut();
 		for (key, value) in value {
 			assert!(key.starts_with("0x"));
 			let key = &key[2..];
@@ -344,7 +387,7 @@ impl LiveClient {
 
 impl ClientT for LiveClient {
 	fn get_keys(&self, prefix: &[u8]) -> super::Result<Vec<Vec<u8>>> {
-		Ok(self.get_keys(prefix)?)
+		Ok(self.get_keys(prefix)?.into_iter().map(|v| v.0).collect())
 	}
 
 	fn get_storage(&self, key: &[u8]) -> super::Result<Option<Vec<u8>>> {
