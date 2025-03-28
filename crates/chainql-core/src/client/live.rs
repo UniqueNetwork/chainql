@@ -1,8 +1,11 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::{cell::RefCell, rc::Rc, result};
 
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
+use jrsonnet_evaluator::bail;
 use jrsonnet_gcmodule::Trace;
+use jsonrpsee::core::ClientError;
 use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
 use parity_scale_codec::Decode;
 use serde::Deserialize;
@@ -14,9 +17,11 @@ use super::ClientT;
 #[derive(Error, Debug)]
 pub enum Error {
 	#[error("rpc error: {0}")]
-	Rpc(#[from] jsonrpsee::core::ClientError),
+	Rpc(#[from] ClientError),
 	#[error("unsupported metadata version, only v14 is supported")]
 	UnsupportedMetadataVersion,
+	#[error("something is broken, keys paged chunk size has reached zero")]
+	UnableToFetchAnyKey,
 	#[error("block not found: {}", .0.map(|v| v.to_string()).unwrap_or_else(|| "latest".to_string()))]
 	BlockNotFound(Option<u32>),
 	#[error("block history is not supported")]
@@ -90,7 +95,7 @@ impl ClientShared {
 		let client = handle.block_on(
 			jsonrpsee::ws_client::WsClientBuilder::default()
 				.max_request_size(20 * 1024 * 1024)
-				.max_response_size(20 * 1024 * 1024)
+				.max_response_size(1024 * 1024 * 1024)
 				.build(uri.to_string()),
 		)?;
 		Ok(Self {
@@ -108,9 +113,21 @@ impl ClientShared {
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
 			block: Rc::new(block),
+
+			learned_max_chunk_size: Cell::new(8000),
 		})
 	}
 }
+
+peg::parser!(
+	grammar text_error() for str {
+		rule num() -> usize
+			= v:$(['0'..='9']+) {? v.parse().map_err(|_| "invalid number")};
+
+		pub rule count_exceeds_max() -> usize
+			= "count exceeds maximum value. value: " num() ", max: " v:num() {v}
+	}
+);
 
 #[derive(Clone, Trace)]
 pub struct LiveClient {
@@ -122,10 +139,11 @@ pub struct LiveClient {
 	fetched_prefixes: Rc<RefCell<Vec<Vec<u8>>>>,
 	#[trace(skip)]
 	block: Rc<String>,
+
+	learned_max_chunk_size: Cell<usize>,
 }
 impl LiveClient {
 	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-		eprintln!("loading keys by prefix {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		if self
@@ -142,20 +160,38 @@ impl LiveClient {
 				.map(|k| k.to_vec())
 				.collect());
 		}
+		eprintln!("loading keys by prefix {prefix_str}");
 
 		let handle = Handle::current();
 		let mut fetched = vec![];
 
 		loop {
-			// Our gate limit
-			const CHUNK: usize = 1000;
-			let chunk = handle.block_on(self.real.get_keys_paged(
+			let chunk_result = handle.block_on(self.real.get_keys_paged(
 				prefix_str.clone(),
-				CHUNK,
+				self.learned_max_chunk_size.get(),
 				fetched.last().cloned(),
 				Some(self.block.as_str().to_owned()),
-			))?;
-			let has_more = chunk.len() == CHUNK;
+			));
+			let chunk = match chunk_result {
+				Ok(v) => v,
+				Err(ClientError::Call(c)) if c.code() == 4002 => {
+					if let Ok(v) = text_error::count_exceeds_max(c.message()) {
+						eprintln!("server didn't like our paged keys limit, resetting to {v}");
+						self.learned_max_chunk_size.set(v);
+					} else {
+						eprintln!("server didn't like our paged keys limit, and we can't extract its limit from {:?}, reducing in half", c.message());
+						self.learned_max_chunk_size
+							.set(self.learned_max_chunk_size.get() / 2);
+						if self.learned_max_chunk_size.get() == 0 {
+							bail!(Error::UnableToFetchAnyKey);
+						}
+					}
+					continue;
+				}
+				Err(e) => return Err(e.into()),
+			};
+
+			let has_more = chunk.len() == self.learned_max_chunk_size.get();
 			let len = chunk.len();
 			eprintln!("loaded {len} keys");
 			fetched.extend(chunk);
@@ -201,7 +237,7 @@ impl LiveClient {
 		Ok(value)
 	}
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		for chunk in keys.chunks(30000) {
+		for chunk in keys.chunks(60000) {
 			self.preload_storage_fallback(chunk)?;
 		}
 		Ok(())
@@ -210,7 +246,7 @@ impl LiveClient {
 		let chunk_size = keys.len();
 		match self.preload_storage_naive(keys) {
 			Ok(()) => Ok(()),
-			Err(Error::Rpc(jsonrpsee::core::ClientError::Call(c))) if c.code() == -32702 => {
+			Err(Error::Rpc(ClientError::Call(c))) if c.code() == -32702 || c.code() == -32008 => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
 				self.preload_storage_fallback(keysa)?;
 				self.preload_storage_fallback(keysb)?;
