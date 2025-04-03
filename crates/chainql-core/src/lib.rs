@@ -27,6 +27,7 @@ use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
 use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
 use rebuild::rebuild;
+use scale_bits::Bits;
 use scale_info::{
 	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
 	TypeDefPrimitive,
@@ -253,6 +254,36 @@ fn bigint_decode<T: std::fmt::Display>(v: T) -> Result<Val> {
 		.map_err(|e| runtime_error!("bigint decode: {e}"))?;
 	Ok(Val::BigInt(Box::new(v)))
 }
+
+const BITSEQUENCE_PREFIX: &str = "0b";
+fn bits_encode(v: Val) -> Result<Bits> {
+	let v = match v {
+		Val::Str(v) => v.to_string(),
+		_ => bail!("unexpected type for bitsequence decoder: {}", v.value_type()),
+	};
+
+	let Some(bitseq) = v.strip_prefix(BITSEQUENCE_PREFIX) else {
+		bail!("invalid bitsequence string: {v}");
+	};
+
+	let mut bits = Bits::with_capacity(bitseq.len());
+	for bit in bitseq.chars() {
+		debug_assert!(bit == '0' || bit == '1');
+		bits.push(bit == '1');
+	}
+
+	Ok(bits)
+}
+fn bits_decode(bits: Bits) -> Val {
+	let mut decoded = String::with_capacity(BITSEQUENCE_PREFIX.len() + bits.len());
+	decoded += BITSEQUENCE_PREFIX;
+
+	for bit in bits {
+		decoded.push(if bit {'1'} else {'0'});
+	}
+
+	decoded.into()
+}
 /// Encode a value [`val`] according to the type [`typ`] registered in the [`reg`], adding it to [`out`].
 fn encode_value<O>(
 	reg: &PortableRegistry,
@@ -431,7 +462,10 @@ where
 			}
 		},
 		TypeDef::Compact(_) => encode_value(reg, typ, true, val, out, from_string)?,
-		TypeDef::BitSequence(_) => bail!("bitseq not supported"),
+		TypeDef::BitSequence(_) => {
+			let v = bits_encode(val)?;
+			v.encode_to(out)
+		},
 	}
 	Ok(())
 }
@@ -580,7 +614,10 @@ where
 				}
 			},
 			TypeDef::Compact(c) => decode_value(dec, reg, c.type_param, true)?,
-			TypeDef::BitSequence(_) => bail!("bitseq not supported"),
+			TypeDef::BitSequence(_) => {
+				let val = Bits::decode(dec).map_err(codec_error)?;
+				bits_decode(val)
+			},
 		},
 	)
 }
