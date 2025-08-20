@@ -1,11 +1,7 @@
 use std::str::FromStr;
 
 use jrsonnet_evaluator::{
-	bail,
-	jrsonnet_macros::builtin,
-	runtime_error,
-	typed::{CheckType, ComplexValType, Either2, Typed, ValType},
-	Either, IStr, ObjValue, Result, ResultExt, Val,
+	bail, jrsonnet_macros::builtin, runtime_error, typed::{CheckType, ComplexValType, Either2, Typed, ValType}, val::NumValue, Either, IStr, ObjValue, Result, ResultExt, Val
 };
 use sp_core::{
 	crypto::{SecretStringError, Ss58AddressFormat, Ss58AddressFormatRegistry, Ss58Codec},
@@ -22,7 +18,7 @@ impl Typed for Ss58Format {
 	fn into_untyped(typed: Self) -> Result<Val> {
 		match Ss58AddressFormatRegistry::try_from(typed.0) {
 			Ok(r) => Ok(Val::string(r.to_string())),
-			Err(_e) => Ok(Val::Num(typed.0.prefix() as f64)),
+			Err(_e) => Ok(Val::Num(NumValue::new(typed.0.prefix() as f64).unwrap())),
 		}
 	}
 

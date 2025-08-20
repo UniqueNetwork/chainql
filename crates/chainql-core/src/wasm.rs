@@ -120,10 +120,10 @@ pub fn builtin_runtime_wasm(this: &builtin_runtime_wasm, data: Hex) -> Result<Ob
 
 	let mut out = ObjValue::builder();
 
-	out.field("version").thunk(RuntimeVersionThunk {
+	out.field("version").try_thunk(RuntimeVersionThunk {
 		runtime: runtime.clone(),
 	})?;
-	out.field("metadata").thunk(MetadataThunk {
+	out.field("metadata").try_thunk(MetadataThunk {
 		runtime: runtime.clone(),
 	})?;
 

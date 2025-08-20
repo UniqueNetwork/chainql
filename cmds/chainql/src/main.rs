@@ -22,14 +22,18 @@ struct Opts {
 	string: bool,
 }
 /// Set up Jrsonnet.
-fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
+fn main_jrsonnet(opts: Opts) -> Result<String> {
 	let import_resolver = opts.misc.import_resolver();
-	s.set_import_resolver(import_resolver);
-	if let Some(std) = opts.std.context_initializer(&s)? {
-		s.set_context_initializer((chainql_core::CqlContextInitializer::default(), std));
+
+	let mut sb = State::builder();
+	sb.import_resolver(import_resolver);
+	if let Some(std) = opts.std.context_initializer()? {
+		sb.context_initializer((chainql_core::CqlContextInitializer::default(), std));
 	} else {
-		s.set_context_initializer(chainql_core::CqlContextInitializer::default());
+		sb.context_initializer(chainql_core::CqlContextInitializer::default());
 	}
+
+	let s = sb.build();
 
 	// Resolve the Jsonnet code supplied to chainql.
 	let res = if opts.input.exec {
@@ -64,10 +68,9 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
 }
 
 fn main_sync() {
-	let s = State::default();
 	let opts = Opts::parse();
 	let trace_format = opts.trace.trace_format();
-	match main_jrsonnet(s, opts) {
+	match main_jrsonnet(opts) {
 		Ok(e) => {
 			println!("{e}");
 			process::exit(0)
