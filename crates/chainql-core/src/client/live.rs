@@ -96,7 +96,8 @@ impl ClientShared {
 		let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
 		let client = handle.block_on(
 			jsonrpsee::ws_client::WsClientBuilder::default()
-				.max_request_size(20 * 1024 * 1024)
+				.request_timeout(Duration::from_secs(300))
+				.max_request_size(256 * 1024 * 1024)
 				.max_response_size(1024 * 1024 * 1024)
 				.build(uri.to_string()),
 		)?;
