@@ -1,5 +1,9 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::env;
+use std::fmt::Display;
+use std::str::FromStr;
+use std::time::Duration;
 use std::vec::Vec;
 use std::{cell::RefCell, rc::Rc, result};
 
@@ -111,14 +115,45 @@ impl ClientShared {
 			.block_on(self.real.get_block_hash(num))?
 			.ok_or(Error::BlockNotFound(num))?;
 
+		let max_workers = get_var("CHAINQL_WORKERS", 16);
+		let keys_chunk_size = get_var("CHAINQL_KEYS_CHUNK_SIZE", 60_000);
+
 		Ok(LiveClient {
 			real: self.real.clone(),
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
 			block: Rc::new(block),
 
+			max_workers,
+			keys_chunk_size,
+
 			learned_max_chunk_size: Cell::new(8000),
 		})
+	}
+}
+
+fn get_var<T>(var: &str, default: T) -> T
+where
+	T: FromStr,
+	T::Err: Display,
+{
+	let value = match env::var(var) {
+		Ok(value) => value,
+		Err(env::VarError::NotPresent) => {
+			return default;
+		},
+		Err(env::VarError::NotUnicode(err)) => {
+			eprintln!("Invalid env var '{var}' value: {err:?}");
+			std::process::exit(1);
+		}
+	};
+
+	match value.parse::<T>() {
+		Ok(parsed) => parsed,
+		Err(err) => {
+			eprintln!("Invalid env var '{var}' value '{value}': {err}");
+			std::process::exit(1);
+		}
 	}
 }
 
@@ -143,6 +178,9 @@ pub struct LiveClient {
 	#[trace(skip)]
 	block: Rc<String>,
 
+	max_workers: usize,
+	keys_chunk_size: usize,
+
 	learned_max_chunk_size: Cell<usize>,
 }
 
@@ -160,7 +198,7 @@ impl LiveClient {
 			}
 			handle.block_on(
 				futures::stream::iter(futures)
-					.buffer_unordered(16)
+					.buffer_unordered(self.max_workers)
 					.try_concat(),
 			)
 		} else {
@@ -271,16 +309,12 @@ impl LiveClient {
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
-				keys.chunks(60000)
+				keys.chunks(self.keys_chunk_size)
 					.map(|slice| self.preload_storage_fallback(slice)),
 			)
-			.buffer_unordered(16)
+			.buffer_unordered(self.max_workers)
 			.try_collect::<()>(),
-		)?;
-		// for chunk in  {
-		// 	self.preload_storage_fallback(chunk)?;
-		// }
-		Ok(())
+		)
 	}
 	async fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
 		let chunk_size = keys.len();
