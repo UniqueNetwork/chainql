@@ -3,16 +3,18 @@ use std::collections::BTreeMap;
 use std::vec::Vec;
 use std::{cell::RefCell, rc::Rc, result};
 
-use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
+use frame_metadata::RuntimeMetadataV14;
 use futures::{FutureExt, StreamExt, TryStreamExt as _};
 use jrsonnet_evaluator::bail;
 use jrsonnet_gcmodule::Trace;
 use jsonrpsee::core::ClientError;
+use jsonrpsee::http_client::HttpClient;
 use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
-use parity_scale_codec::Decode;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::runtime::Handle;
+
+use crate::parse_metadata;
 
 use super::ClientT;
 
@@ -67,40 +69,44 @@ pub trait SubstrateRpc {
 
 #[derive(Clone, Trace)]
 pub struct ClientShared {
+	url: String,
 	#[trace(skip)]
-	real: Rc<WsClient>,
+	real: Rc<HttpClient>,
 }
 
+async fn make_client(url: &str) -> Result<HttpClient> {
+	let uri: hyper::Uri = url.parse()?;
+	let mut uri = uri.into_parts();
+	let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
+	let wss_scheme = http::uri::Scheme::try_from("wss").expect("valid");
+	if uri.scheme == Some(ws_scheme.clone()) || uri.scheme == Some(wss_scheme) {
+		if let Some(authority) = &mut uri.authority {
+			if authority.port().is_none() {
+				*authority = http::uri::Authority::try_from(format!(
+					"{authority}:{}",
+					if uri.scheme == Some(ws_scheme) {
+						9944
+					} else {
+						443
+					}
+				))
+				.expect("valid");
+			}
+		};
+	}
+	let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
+	let client = jsonrpsee::http_client::HttpClientBuilder::default()
+		.max_request_size(20 * 1024 * 1024)
+		.max_response_size(1024 * 1024 * 1024)
+		.build(uri.to_string())?;
+	Ok(client)
+}
 impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
 		let handle = Handle::current();
-		let uri: hyper::Uri = url.as_ref().parse()?;
-		let mut uri = uri.into_parts();
-		let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
-		let wss_scheme = http::uri::Scheme::try_from("wss").expect("valid");
-		if uri.scheme == Some(ws_scheme.clone()) || uri.scheme == Some(wss_scheme) {
-			if let Some(authority) = &mut uri.authority {
-				if authority.port().is_none() {
-					*authority = http::uri::Authority::try_from(format!(
-						"{authority}:{}",
-						if uri.scheme == Some(ws_scheme) {
-							9944
-						} else {
-							443
-						}
-					))
-					.expect("valid");
-				}
-			};
-		}
-		let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
-		let client = handle.block_on(
-			jsonrpsee::ws_client::WsClientBuilder::default()
-				.max_request_size(20 * 1024 * 1024)
-				.max_response_size(1024 * 1024 * 1024)
-				.build(uri.to_string()),
-		)?;
+		let client = handle.block_on(make_client(url.as_ref()))?;
 		Ok(Self {
+			url: url.as_ref().to_owned(),
 			real: Rc::new(client),
 		})
 	}
@@ -111,6 +117,7 @@ impl ClientShared {
 			.ok_or(Error::BlockNotFound(num))?;
 
 		Ok(LiveClient {
+			url: self.url.clone(),
 			real: self.real.clone(),
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
@@ -133,8 +140,9 @@ peg::parser!(
 
 #[derive(Clone, Trace)]
 pub struct LiveClient {
+	url: String,
 	#[trace(skip)]
-	real: Rc<WsClient>,
+	real: Rc<HttpClient>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
@@ -148,23 +156,33 @@ pub struct LiveClient {
 #[derive(Default)]
 pub struct Key(Vec<u8>);
 
+const PARALLELISM: usize = 16;
+
 impl LiveClient {
 	pub fn get_keys(&self, prefix: &[u8]) -> Result<Vec<Key>> {
 		let handle = Handle::current();
 		if prefix.is_empty() {
-			let prefixes: Vec<u8> = (0u8..=255).collect();
-			let mut futures = vec![];
-			for p in &prefixes {
-				futures.push(self.get_keys_naive(std::slice::from_ref(p)));
-			}
-			handle.block_on(
-				futures::stream::iter(futures)
-					.buffer_unordered(16)
-					.try_concat(),
-			)
+			handle.block_on(self.get_keys_parallelize(prefix))
 		} else {
 			handle.block_on(self.get_keys_naive(prefix))
 		}
+	}
+	pub async fn get_keys_parallelize(&self, prefix: &[u8]) -> Result<Vec<Key>> {
+		let prefixes: Vec<Vec<u8>> = (0u8..=255)
+			.map(|p| {
+				let mut prefix = prefix.to_vec();
+				prefix.push(p);
+				prefix
+			})
+			.collect();
+		let mut futures = vec![];
+		for p in &prefixes {
+			futures.push(self.get_keys_naive(p));
+		}
+		futures::stream::iter(futures)
+			.buffer_unordered(PARALLELISM)
+			.try_concat()
+			.await
 	}
 	pub async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
 		let prefix_str = format!("0x{}", hex::encode(prefix));
@@ -273,7 +291,7 @@ impl LiveClient {
 				keys.chunks(60000)
 					.map(|slice| self.preload_storage_fallback(slice)),
 			)
-			.buffer_unordered(16)
+			.buffer_unordered(PARALLELISM)
 			.try_collect::<()>(),
 		)?;
 		// for chunk in  {
@@ -286,6 +304,14 @@ impl LiveClient {
 		match self.preload_storage_naive(keys).await {
 			Ok(()) => Ok(()),
 			Err(Error::Rpc(ClientError::Call(c))) if c.code() == -32702 || c.code() == -32008 => {
+				let (keysa, keysb) = keys.split_at(chunk_size / 2);
+				self.preload_storage_fallback(keysa).boxed_local().await?;
+				self.preload_storage_fallback(keysb).boxed_local().await?;
+				Ok(())
+			}
+			Err(Error::Rpc(ClientError::Transport(b)))
+				if b.to_string().contains("Request rejected `413`") =>
+			{
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
 				self.preload_storage_fallback(keysa).boxed_local().await?;
 				self.preload_storage_fallback(keysb).boxed_local().await?;
@@ -307,7 +333,8 @@ impl LiveClient {
 			}
 			drop(cache);
 		}
-		eprintln!("preloading {} keys", list.len());
+		let total_len = list.iter().map(|v| v.len() + 2 + 1).sum::<usize>() + 1;
+		eprintln!("preloading {} keys, size = {total_len}", list.len());
 		// let handle = Handle::current();
 		let value = self
 			.real
@@ -338,16 +365,7 @@ impl LiveClient {
 		eprintln!("loading metadata");
 		let handle = Handle::current();
 		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_str().to_owned())))?;
-		assert!(meta.starts_with("0x"));
-		let meta = hex::decode(&meta[2..]).expect("decode hex");
-		assert!(&meta[0..4] == b"meta");
-		let meta = &meta[4..];
-		let meta = RuntimeMetadata::decode(&mut &meta[..]).expect("decode");
-		if let RuntimeMetadata::V14(v) = meta {
-			Ok(v)
-		} else {
-			Err(Error::UnsupportedMetadataVersion)
-		}
+		Ok(parse_metadata(meta.as_bytes()))
 	}
 	fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
 		if self

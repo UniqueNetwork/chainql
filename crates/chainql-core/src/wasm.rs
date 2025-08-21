@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+use jrsonnet_evaluator::Thunk;
 use jrsonnet_evaluator::{
 	error::ErrorKind::RuntimeError, function::builtin, typed::Typed, val::ThunkValue, ObjValue,
 	Result, Val,
@@ -16,7 +17,7 @@ type HostFunctions = (
 	cumulus_primitives_proof_size_hostfunction::storage_proof_size::HostFunctions,
 );
 
-use crate::Hex;
+use crate::{metadata_obj, parse_metadata, Hex};
 
 #[derive(Trace)]
 pub struct RuntimeContainer {
@@ -108,13 +109,23 @@ pub fn builtin_runtime_wasm(this: &builtin_runtime_wasm, data: Hex) -> Result<Ob
 		}
 	}
 	#[derive(Trace)]
+	struct MetadataHexThunk {
+		runtime: Cc<RuntimeContainer>,
+	}
+	impl ThunkValue for MetadataHexThunk {
+		type Output = Val;
+		fn get(self: Box<Self>) -> Result<Val> {
+			self.runtime.metadata().map(Hex).and_then(Hex::into_untyped)
+		}
+	}
+	#[derive(Trace)]
 	struct MetadataThunk {
 		runtime: Cc<RuntimeContainer>,
 	}
 	impl ThunkValue for MetadataThunk {
 		type Output = Val;
 		fn get(self: Box<Self>) -> Result<Val> {
-			self.runtime.metadata().map(Hex).and_then(Hex::into_untyped)
+			Ok(metadata_obj(&parse_metadata(&self.runtime.metadata()?)))
 		}
 	}
 
@@ -123,7 +134,14 @@ pub fn builtin_runtime_wasm(this: &builtin_runtime_wasm, data: Hex) -> Result<Ob
 	out.field("version").thunk(RuntimeVersionThunk {
 		runtime: runtime.clone(),
 	})?;
-	out.field("metadata").thunk(MetadataThunk {
+	// TODO: Print deprecation warning
+	out.field("metadata").thunk(MetadataHexThunk {
+		runtime: runtime.clone(),
+	})?;
+	out.field("metaHex").thunk(MetadataHexThunk {
+		runtime: runtime.clone(),
+	})?;
+	out.field("meta").thunk(MetadataThunk {
 		runtime: runtime.clone(),
 	})?;
 

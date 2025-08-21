@@ -13,3 +13,4 @@ tokio.workspace = true
 jrsonnet-evaluator.workspace = true
 jrsonnet-stdlib.workspace = true
 jrsonnet-cli.workspace = true
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

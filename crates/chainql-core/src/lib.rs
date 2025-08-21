@@ -27,6 +27,7 @@ use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
 use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
 use rebuild::rebuild;
+use scale_bits::Bits;
 use scale_info::{
 	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
 	TypeDefPrimitive,
@@ -62,6 +63,18 @@ pub mod wasm;
 fn metadata_obj(meta: &RuntimeMetadataV14) -> Val {
 	let ty = serde_json::to_value(meta).expect("valid value");
 	Val::deserialize(ty).expect("valid value")
+}
+pub(crate) fn parse_metadata(meta: &[u8]) -> RuntimeMetadataV14 {
+	assert!(meta.starts_with(b"0x"));
+	let meta = ::hex::decode(&meta[2..]).expect("decode hex");
+	assert!(&meta[0..4] == b"meta");
+	let meta = &meta[4..];
+	let meta = RuntimeMetadata::decode(&mut &meta[..]).expect("decode");
+	if let RuntimeMetadata::V14(v) = meta {
+		v
+	} else {
+		panic!("unsupported metadata version, only v14 is supported")
+	}
 }
 
 /// Create a lazily-evaluated thunk by wrapping the call inside.
@@ -253,6 +266,7 @@ fn bigint_decode<T: std::fmt::Display>(v: T) -> Result<Val> {
 		.map_err(|e| runtime_error!("bigint decode: {e}"))?;
 	Ok(Val::BigInt(Box::new(v)))
 }
+
 /// Encode a value [`val`] according to the type [`typ`] registered in the [`reg`], adding it to [`out`].
 fn encode_value<O>(
 	reg: &PortableRegistry,
@@ -431,7 +445,10 @@ where
 			}
 		},
 		TypeDef::Compact(_) => encode_value(reg, typ, true, val, out, from_string)?,
-		TypeDef::BitSequence(_) => bail!("bitseq not supported"),
+		TypeDef::BitSequence(_) => <Vec<bool>>::from_untyped(val)?
+			.into_iter()
+			.collect::<Bits>()
+			.encode_to(out),
 	}
 	Ok(())
 }
@@ -580,7 +597,10 @@ where
 				}
 			},
 			TypeDef::Compact(c) => decode_value(dec, reg, c.type_param, true)?,
-			TypeDef::BitSequence(_) => bail!("bitseq not supported"),
+			TypeDef::BitSequence(_) => {
+				let bits = Bits::decode(dec).map_err(|e| runtime_error!("invalid bitseq: {e}"))?;
+				Typed::into_untyped(bits.to_vec())
+			}?,
 		},
 	)
 }

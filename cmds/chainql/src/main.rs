@@ -64,6 +64,8 @@ fn main_jrsonnet(s: State, opts: Opts) -> Result<String> {
 }
 
 fn main_sync() {
+	tracing_subscriber::fmt().init();
+
 	let s = State::default();
 	let opts = Opts::parse();
 	let trace_format = opts.trace.trace_format();

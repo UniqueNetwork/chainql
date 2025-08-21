@@ -12,7 +12,11 @@ tokio.workspace = true
 jrsonnet-evaluator.workspace = true
 jrsonnet-gcmodule.workspace = true
 hex = "0.4.3"
-jsonrpsee = { version = "0.24.7", features = ["macros", "ws-client"] }
+jsonrpsee = { version = "0.24.7", features = [
+	"macros",
+	"ws-client",
+	"http-client",
+] }
 parity-scale-codec = { version = "3.6.12", features = ["derive"] }
 scale-info = "2.11.3"
 serde = "1.0.203"
@@ -32,3 +36,4 @@ libsecp256k1 = "0.7.1"
 sp-runtime = "40.0.0"
 directories = "6.0.0"
 futures = "0.3.31"
+scale-bits = "0.7.0"
