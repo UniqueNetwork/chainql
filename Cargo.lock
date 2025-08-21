@@ -511,7 +511,7 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "chainql"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "chainql-core",
  "clap",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-core"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "chainql-frame-metadata",
  "cumulus-primitives-proof-size-hostfunction",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-frame-metadata"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "cfg-if",
  "parity-scale-codec",
