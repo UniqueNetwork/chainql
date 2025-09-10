@@ -440,8 +440,4 @@ impl ClientT for LiveClient {
 	fn contains_data_for(&self, prefix: &[u8]) -> super::Result<bool> {
 		Ok(self.contains_data_for(prefix)?)
 	}
-
-	fn next(&self) -> super::Result<super::Client> {
-		Err(Error::BlockHistoryNotSupported.into())
-	}
 }
