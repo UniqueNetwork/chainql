@@ -1,10 +1,14 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RpcError {
-	#[error("network error: {0}")]
-	Network(#[from] reqwest::Error),
+	#[error("reqwest error: {0}")]
+	Reqwest(#[from] reqwest::Error),
+
+	#[error("jsonrpsee error: {0}")]
+	Jsonrpsee(#[from] jsonrpsee::core::ClientError),
 
 	#[error("bad response: {0}")]
 	BadResponse(String),
@@ -20,7 +24,8 @@ pub struct QueryStorageResult {
 	pub changes: Vec<(String, Option<String>)>,
 }
 
-pub trait Rpc {
+#[async_trait]
+pub trait RpcClient {
 	async fn get_block_hash(&self, num: Option<u32>) -> Result<Option<String>>;
 
 	async fn get_keys_paged(

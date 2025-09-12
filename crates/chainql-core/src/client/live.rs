@@ -17,14 +17,20 @@ use tokio::runtime::Handle;
 use tracing::{info_span, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
+use url::Url;
 
-use crate::client::rpc::{Rpc, RpcError};
+use crate::client::rpc::{RpcClient, RpcError};
 use crate::client::rpc_http::HttpClient;
+use crate::client::rpc_ws::WsClient;
 
 use super::ClientT;
 
 #[derive(Error, Debug)]
 pub enum Error {
+	#[error("url error: {0}")]
+	UrlParse(#[from] url::ParseError),
+	#[error("unsupported url scheme: {0}")]
+	UnsupportedUrlScheme(String),
 	#[error("rpc error: {0}")]
 	Rpc(#[from] RpcError),
 	#[error("unsupported metadata version, only v14 is supported")]
@@ -35,8 +41,6 @@ pub enum Error {
 	BlockNotFound(Option<u32>),
 	#[error("block history is not supported")]
 	BlockHistoryNotSupported,
-	#[error("url: {0}")]
-	UrlParse(#[from] url::ParseError),
 }
 
 pub type Result<T, E = Error> = result::Result<T, E>;
@@ -44,16 +48,31 @@ pub type Result<T, E = Error> = result::Result<T, E>;
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
-	rpc_client: Rc<HttpClient>,
+	rpc_client: Rc<Box<dyn RpcClient>>,
 }
 
 impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
-		let url = url.as_ref().parse()?;
-		let rpc_client = HttpClient::new(url, Duration::from_secs(300))?;
+		let url: Url = url.as_ref().parse()?;
+		let timeout: Duration = Duration::from_secs(300);
+		
+		let client: Box<dyn RpcClient> = match url.scheme() {
+			"http" | "https" => {
+				let client = HttpClient::new(url, timeout)?;
+				Box::new(client)
+			}
+			"ws" | "wss" => {
+				let handle = Handle::current();
+				let client = handle.block_on(WsClient::new(url, timeout))?;
+				Box::new(client)
+			}
+			scheme => {
+				return Err(Error::UnsupportedUrlScheme(scheme.to_owned()));
+			}
+		};
 
 		Ok(Self {
-			rpc_client: Rc::new(rpc_client),
+			rpc_client: Rc::new(client),
 		})
 	}
 
@@ -119,7 +138,7 @@ peg::parser!(
 #[derive(Clone, Trace)]
 pub struct LiveClient {
 	#[trace(skip)]
-	real: Rc<HttpClient>,
+	real: Rc<Box<dyn RpcClient>>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
@@ -259,9 +278,9 @@ impl LiveClient {
 		cache.insert(key.to_vec(), value.clone());
 		Ok(value)
 	}
-
+// #[tracing::instrument(fields(indicatif.pb_show))]
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		let header_span = info_span!("preload_storage");
+		let header_span = info_span!("preload_storage", indicatif.pb_show = true);
 		header_span
 			.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
 		header_span.pb_set_length(keys.len() as u64);
@@ -273,7 +292,7 @@ impl LiveClient {
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
-				keys.chunks(self.keys_chunk_size)
+				keys.chunks(10)
 					.map(|slice| self.preload_storage_fallback(slice)),
 			)
 			.buffer_unordered(self.max_workers)

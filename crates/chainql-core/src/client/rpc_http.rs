@@ -1,4 +1,4 @@
-use futures::FutureExt;
+use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -8,7 +8,7 @@ use tokio::{
 	time::{sleep, Duration, Instant},
 };
 
-use crate::client::rpc::{QueryStorageResult, Result, Rpc, RpcError};
+use crate::client::rpc::{QueryStorageResult, Result, RpcClient, RpcError};
 
 #[derive(Deserialize)]
 pub struct Response<T> {
@@ -37,7 +37,11 @@ impl HttpClient {
 		})
 	}
 
-	async fn call<T: DeserializeOwned>(&self, method: &str, params: &impl Serialize) -> Result<T> {
+	async fn call<P, T>(&self, method: &'static str, params: P) -> Result<T>
+	where
+		P: Serialize,
+		T: DeserializeOwned,
+	{
 		self.rate_limiter.wait().await;
 
 		let body = serde_json::json!({
@@ -58,7 +62,7 @@ impl HttpClient {
 			|| response.status() == StatusCode::GATEWAY_TIMEOUT
 		{
 			self.rate_limiter.request_limited().await;
-			return self.call(method, params).boxed_local().await;
+			return Box::pin(self.call(method, params)).await;
 		} else {
 			self.rate_limiter.request_succeeded().await;
 		}
@@ -90,7 +94,8 @@ impl HttpClient {
 	}
 }
 
-impl Rpc for HttpClient {
+#[async_trait]
+impl RpcClient for HttpClient {
 	async fn get_block_hash(&self, num: Option<u32>) -> Result<Option<String>> {
 		self.call(
 			"chain_getBlockHash",
