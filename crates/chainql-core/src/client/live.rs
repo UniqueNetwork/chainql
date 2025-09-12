@@ -18,7 +18,8 @@ use tracing::{info_span, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
 
-use crate::client::rpc::{RpcError, SubstrateRpc};
+use crate::client::rpc::{Rpc, RpcError};
+use crate::client::rpc_http::HttpClient;
 
 use super::ClientT;
 
@@ -37,18 +38,19 @@ pub enum Error {
 	#[error("url: {0}")]
 	UrlParse(#[from] url::ParseError),
 }
+
 pub type Result<T, E = Error> = result::Result<T, E>;
 
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
-	rpc_client: Rc<SubstrateRpc>,
+	rpc_client: Rc<HttpClient>,
 }
 
 impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
 		let url = url.as_ref().parse()?;
-		let rpc_client = SubstrateRpc::new(url, Duration::from_secs(300))?;
+		let rpc_client = HttpClient::new(url, Duration::from_secs(300))?;
 
 		Ok(Self {
 			rpc_client: Rc::new(rpc_client),
@@ -117,7 +119,7 @@ peg::parser!(
 #[derive(Clone, Trace)]
 pub struct LiveClient {
 	#[trace(skip)]
-	real: Rc<SubstrateRpc>,
+	real: Rc<HttpClient>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
@@ -260,7 +262,8 @@ impl LiveClient {
 
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
 		let header_span = info_span!("preload_storage");
-		header_span.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
+		header_span
+			.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
 		header_span.pb_set_length(keys.len() as u64);
 		header_span.pb_set_message("preloading keys");
 		header_span.pb_set_finish_message("all keys preloaded");
