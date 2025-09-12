@@ -60,8 +60,4 @@ impl ClientT for ClientDump {
 	fn get_metadata(&self) -> super::Result<RuntimeMetadataV14> {
 		Ok(self.meta.clone())
 	}
-
-	fn next(&self) -> super::Result<super::Client> {
-		Err(Error::NoNextBlock.into())
-	}
 }

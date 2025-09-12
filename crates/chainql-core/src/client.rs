@@ -4,6 +4,8 @@ use frame_metadata::RuntimeMetadataV14;
 use jrsonnet_evaluator::runtime_error;
 use jrsonnet_gcmodule::Trace;
 
+mod rpc;
+
 pub mod dump;
 pub mod live;
 
