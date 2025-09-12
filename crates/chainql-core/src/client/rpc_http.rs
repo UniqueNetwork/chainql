@@ -97,13 +97,7 @@ impl HttpClient {
 #[async_trait]
 impl RpcClient for HttpClient {
 	async fn get_block_hash(&self, num: Option<u32>) -> Result<Option<String>> {
-		self.call(
-			"chain_getBlockHash",
-			&json!({
-				"num": num
-			}),
-		)
-		.await
+		self.call("chain_getBlockHash", json!([num])).await
 	}
 
 	async fn get_keys_paged(
@@ -113,27 +107,12 @@ impl RpcClient for HttpClient {
 		start_key: Option<&String>,
 		at: Option<&String>,
 	) -> Result<Vec<String>> {
-		self.call(
-			"state_getKeysPaged",
-			&json!({
-				"key": key,
-				"count": count,
-				"start_key": start_key,
-				"at": at
-			}),
-		)
-		.await
+		self.call("state_getKeysPaged", json!([key, count, start_key, at]))
+			.await
 	}
 
 	async fn get_storage(&self, key: String, at: Option<String>) -> Result<Option<String>> {
-		self.call(
-			"state_getStorage",
-			&json!({
-				"key": key,
-				"at": at
-			}),
-		)
-		.await
+		self.call("state_getStorage", json!([key, at])).await
 	}
 
 	async fn query_storage(
@@ -152,13 +131,7 @@ impl RpcClient for HttpClient {
 	}
 
 	async fn get_metadata(&self, at: Option<&String>) -> Result<String> {
-		self.call(
-			"state_getMetadata",
-			&json!({
-				"at": at
-			}),
-		)
-		.await
+		self.call("state_getMetadata", json!([at])).await
 	}
 }
 

@@ -55,7 +55,7 @@ impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
 		let url: Url = url.as_ref().parse()?;
 		let timeout: Duration = Duration::from_secs(300);
-		
+
 		let client: Box<dyn RpcClient> = match url.scheme() {
 			"http" | "https" => {
 				let client = HttpClient::new(url, timeout)?;
@@ -278,7 +278,7 @@ impl LiveClient {
 		cache.insert(key.to_vec(), value.clone());
 		Ok(value)
 	}
-// #[tracing::instrument(fields(indicatif.pb_show))]
+
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
 		let header_span = info_span!("preload_storage", indicatif.pb_show = true);
 		header_span
@@ -292,7 +292,7 @@ impl LiveClient {
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
-				keys.chunks(10)
+				keys.chunks(self.keys_chunk_size)
 					.map(|slice| self.preload_storage_fallback(slice)),
 			)
 			.buffer_unordered(self.max_workers)
