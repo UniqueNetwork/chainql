@@ -138,7 +138,7 @@ impl RpcClient for HttpClient {
 struct RateLimiter(Mutex<RateLimiterState>);
 
 struct RateLimiterState {
-	rps: u32,
+	rpm: u32,
 	increase_param: u32,
 	decrease_factor: f32,
 	last_requested_at: Option<Instant>,
@@ -147,7 +147,7 @@ struct RateLimiterState {
 impl RateLimiter {
 	fn new() -> Self {
 		Self(Mutex::new(RateLimiterState {
-			rps: 1000,
+			rpm: 1000,
 			increase_param: 50,
 			decrease_factor: 0.8,
 			last_requested_at: None,
@@ -161,7 +161,7 @@ impl RateLimiter {
 			let mut this = self.0.lock().await;
 
 			if let Some(last_requested_at) = this.last_requested_at.replace(requested_at) {
-				(Duration::from_secs(60) / this.rps)
+				(Duration::from_secs(60) / this.rpm)
 					.saturating_sub(requested_at - last_requested_at)
 			} else {
 				Duration::ZERO
@@ -174,14 +174,14 @@ impl RateLimiter {
 	async fn request_succeeded(&self) {
 		let mut this = self.0.lock().await;
 
-		this.rps += this.increase_param;
+		this.rpm += this.increase_param;
 	}
 
 	async fn request_limited(&self) {
 		let mut this = self.0.lock().await;
 
-		let new_rps = ((this.rps as f32) * this.decrease_factor).round() as u32;
+		let new_rps = ((this.rpm as f32) * this.decrease_factor).round() as u32;
 
-		this.rps = if new_rps > 0 { new_rps } else { 1 };
+		this.rpm = if new_rps > 0 { new_rps } else { 1 };
 	}
 }
