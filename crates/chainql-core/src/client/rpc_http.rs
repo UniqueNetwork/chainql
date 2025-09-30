@@ -3,10 +3,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sp_runtime::DeserializeOwned;
-use tokio::{
-	sync::Mutex,
-	time::{sleep, Duration, Instant},
-};
+use std::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::client::rpc::{QueryStorageResult, Result, RpcClient, RpcError};
 
@@ -42,6 +40,8 @@ impl HttpClient {
 		P: Serialize,
 		T: DeserializeOwned,
 	{
+		let mut rate_limiter_guard = self.rate_limiter.request_pending();
+
 		self.rate_limiter.wait().await;
 
 		let body = serde_json::json!({
@@ -61,11 +61,11 @@ impl HttpClient {
 		if response.status() == StatusCode::TOO_MANY_REQUESTS
 			|| response.status() == StatusCode::GATEWAY_TIMEOUT
 		{
-			self.rate_limiter.request_limited().await;
+			drop(rate_limiter_guard);
 			return Box::pin(self.call(method, params)).await;
-		} else {
-			self.rate_limiter.request_succeeded().await;
 		}
+
+		rate_limiter_guard.succeeded();
 
 		if response.status() != StatusCode::OK {
 			return Err(RpcError::BadResponse(format!(
@@ -158,7 +158,7 @@ impl RateLimiter {
 		let requested_at = Instant::now();
 
 		let sleep_duration = {
-			let mut this = self.0.lock().await;
+			let mut this = self.0.lock().expect("not poisoned");
 
 			if let Some(last_requested_at) = this.last_requested_at.replace(requested_at) {
 				(Duration::from_secs(60) / this.rpm)
@@ -171,17 +171,45 @@ impl RateLimiter {
 		sleep(sleep_duration).await
 	}
 
-	async fn request_succeeded(&self) {
-		let mut this = self.0.lock().await;
+	fn request_pending(&self) -> RateLimiterGuard<'_> {
+		RateLimiterGuard {
+			rate_limiter: self,
+			succeeded: false,
+		}
+	}
+
+	fn request_succeeded(&self) {
+		let mut this = self.0.lock().expect("not poisoned");
 
 		this.rpm += this.increase_param;
 	}
 
-	async fn request_limited(&self) {
-		let mut this = self.0.lock().await;
+	fn request_limited(&self) {
+		let mut this = self.0.lock().expect("not poisoned");
 
 		let new_rps = ((this.rpm as f32) * this.decrease_factor).round() as u32;
 
 		this.rpm = if new_rps > 0 { new_rps } else { 1 };
+	}
+}
+
+struct RateLimiterGuard<'a> {
+	rate_limiter: &'a RateLimiter,
+	succeeded: bool,
+}
+
+impl RateLimiterGuard<'_> {
+	fn succeeded(&mut self) {
+		self.succeeded = true;
+	}
+}
+
+impl Drop for RateLimiterGuard<'_> {
+	fn drop(&mut self) {
+		if self.succeeded {
+			self.rate_limiter.request_succeeded();
+		} else {
+			self.rate_limiter.request_limited();
+		}
 	}
 }
