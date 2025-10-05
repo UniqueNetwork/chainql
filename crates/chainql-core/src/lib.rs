@@ -1,9 +1,5 @@
 use std::{
-	any::TypeId,
-	collections::{BTreeMap, BTreeSet, HashSet},
-	path::PathBuf,
-	rc::Rc,
-	str::FromStr,
+	any::TypeId, collections::{BTreeMap, BTreeSet, HashSet}, path::PathBuf, rc::Rc, str::FromStr
 };
 
 use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
@@ -18,7 +14,7 @@ use jrsonnet_evaluator::{
 };
 use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
-use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
+use parity_scale_codec::{Compact, Encode, Input, Output};
 use rebuild::rebuild;
 use scale_info::{
 	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
@@ -105,22 +101,17 @@ fn missing_resolve() -> JrError {
 	runtime_error!("invalid metadata: missing resolve key")
 }
 
-/// Return a codec error.
-fn codec_error(err: parity_scale_codec::Error) -> JrError {
-	runtime_error!("codec: {}", err)
-}
-
 /// Decode a value as it is or into compact.
 fn decode_maybe_compact<I, T>(dec: &mut I, compact: bool) -> Result<T>
 where
 	I: Input,
-	T: Decode,
-	Compact<T>: Decode,
+	T: DecodeExt,
+	Compact<T>: DecodeExt,
 {
 	if compact {
-		<Compact<T>>::decode(dec).map(|v| v.0).map_err(codec_error)
+		<Compact<T>>::decode(dec).map(|v| v.0)
 	} else {
-		T::decode(dec).map_err(codec_error)
+		<T as DecodeExt>::decode(dec)
 	}
 }
 
@@ -188,8 +179,9 @@ where
 	}
 	let mut out = ObjValueBuilder::new();
 	for (i, f) in typ.iter().enumerate() {
-		let field = decode_value(dec, reg, f.ty, compact)?;
-		out.field(f.name.clone().unwrap_or_else(|| format!("unnamed{}", i)))
+		let field = decode_value(dec, reg, f.ty, compact)
+			.map_err(|err| runtime_error!("broken field {}: {}", f.name.clone().unwrap_or_else(|| i.to_string()), err))?;
+		out.field(f.name.clone().unwrap_or_else(|| format!("unnamed{i}")))
 			.try_value(field)?;
 	}
 	Ok(Val::Obj(out.build()))
@@ -430,6 +422,69 @@ where
 	Ok(())
 }
 
+trait DecodeExt
+where
+	Self: parity_scale_codec::Decode
+{
+	fn decode<I: Input>(input: &mut I) -> Result<Self> {
+		let remaining = input.remaining_len()
+			.map_err(|err| runtime_error!("codec: failed to read remaining len: {err}"))?;
+
+		match <Self as parity_scale_codec::Decode>::decode(input) {
+			Ok(value) => Ok(value),
+			Err(err) => {
+				if err == "Not enough data to fill buffer".into()
+					&& let Some(expected) = Self::encoded_fixed_size()
+					&& let Some(remaining) = remaining
+				{
+					Err(runtime_error!(
+						"codec: not enough bytes to decode type {}: expected {} bytes, but only {} byte is available",
+						core::any::type_name::<Self>(),
+						expected,
+						remaining
+					))
+				} else {
+					Err(runtime_error!("codec: {err}"))
+				}
+			}
+		}
+	}
+}
+
+impl<T> DecodeExt for T
+where
+	T: parity_scale_codec::Decode
+{}
+
+/// Decode some value [`dec`] into the type [`typ`] in the registry [`reg`].
+/// Returns default if decode failed.
+fn decode_value_or_default<I>(
+	dec: &mut I,
+	reg: &PortableRegistry,
+	name: &str,
+	typ: UntrackedSymbol<TypeId>,
+	compact: bool,
+	default: Option<Vec<u8>>,
+	use_default_on_corrupted: bool,
+) -> Result<Val>
+where
+	I: Input,
+{
+	let mut value = decode_value(dec, reg, typ, compact);
+	
+	if let Err(err) = &value && use_default_on_corrupted {
+		tracing::warn!("Storage {name} is corrupted. Default values ​​will be used. Error: {err}");
+
+		value = if let Some(default) = default {
+			decode_value(&mut default.as_ref(), reg, typ, compact)
+		} else {
+			Ok(Val::Null)
+		};
+	}
+
+	value
+}
+
 /// Decode some value [`dec`] into the type [`typ`] in the registry [`reg`].
 fn decode_value<I>(
 	dec: &mut I,
@@ -445,16 +500,19 @@ where
 	typ = new_typ;
 	Ok(
 		match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
-			TypeDef::Composite(c) => decode_obj_value(dec, reg, &c.fields, compact)?,
+			TypeDef::Composite(c) => {
+				decode_obj_value(dec, reg, &c.fields, compact)?
+			},
 			TypeDef::Variant(e) => {
-				let idx = u8::decode(dec).map_err(codec_error)?;
+				let idx = u8::decode(dec)?;
 				for var in e.variants.iter() {
 					if var.index == idx {
 						if var.fields.is_empty() {
 							return Ok(Val::string(var.name.as_str()));
 						}
 						let mut obj = ObjValueBuilder::new();
-						let val = decode_obj_value(dec, reg, &var.fields, compact)?;
+						let val = decode_obj_value(dec, reg, &var.fields, compact)
+							.map_err(|err| runtime_error!("broken variant {}: {}", var.name, err))?;
 						obj.field(var.name.as_str()).try_value(val)?;
 
 						return Ok(Val::Obj(obj.build()));
@@ -469,12 +527,12 @@ where
 						.type_def,
 					TypeDef::Primitive(TypeDefPrimitive::U8)
 				) {
-					let raw = <Vec<u8>>::decode(dec).map_err(codec_error)?;
+					let raw = <Vec<u8>>::decode(dec)?;
 					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
 
 				let mut out = vec![];
-				let size = <Compact<u32>>::decode(dec).map_err(codec_error)?;
+				let size = <Compact<u32>>::decode(dec)?;
 				for _ in 0..size.0 {
 					let val = decode_value(dec, reg, seq.type_param, compact)?;
 					out.push(val);
@@ -512,16 +570,17 @@ where
 			}
 			TypeDef::Primitive(p) => match p {
 				TypeDefPrimitive::Bool => {
-					let val = bool::decode(dec).map_err(codec_error)?;
+
+					let val = bool::decode(dec)?;
 					Val::Bool(val)
 				}
 				TypeDefPrimitive::Char => bail!("char not supported"),
 				TypeDefPrimitive::Str => {
-					let val = String::decode(dec).map_err(codec_error)?;
+					let val = String::decode(dec)?;
 					Val::string(val)
 				}
 				TypeDefPrimitive::U8 => {
-					let val = u8::decode(dec).map_err(codec_error)?;
+					let val = u8::decode(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::U16 => {
@@ -542,31 +601,31 @@ where
 				}
 				TypeDefPrimitive::U256 => {
 					ensure!(!compact, "u256 can't be compact");
-					let val = U256::decode(dec).map_err(codec_error)?;
+					let val = U256::decode(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I8 => {
-					let val = i8::decode(dec).map_err(codec_error)?;
+					let val = i8::decode(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I16 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i16::decode(dec).map_err(codec_error)?;
+					let val = i16::decode(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I32 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i32::decode(dec).map_err(codec_error)?;
+					let val = i32::decode(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I64 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i64::decode(dec).map_err(codec_error)?;
+					let val = i64::decode(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I128 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i128::decode(dec).map_err(codec_error)?;
+					let val = i128::decode(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I256 => {
@@ -584,12 +643,13 @@ fn fetch_decode_key(
 	key: &[u8],
 	client: Client,
 	registry: Rc<PortableRegistry>,
+	name: &str,
 	typ: UntrackedSymbol<TypeId>,
 	default: Option<Vec<u8>>,
 ) -> Result<Val> {
 	let value = client.get_storage(key)?;
 	Ok(if let Some(value) = value {
-		decode_value(&mut &value[..], &registry, typ, false)?
+		decode_value_or_default(&mut &value[..], &registry, name, typ, false, default, true)?
 	} else if let Some(default) = default {
 		decode_value(&mut &default[..], &registry, typ, false)?
 	} else {
@@ -612,6 +672,7 @@ struct SharedMapFetcherContext {
 #[derive(Clone)]
 struct MapFetcherContext {
 	shared: Rc<SharedMapFetcherContext>,
+	name: Rc<String>,
 	prefix: Rc<Vec<u8>>,
 	current_key_depth: usize,
 }
@@ -633,6 +694,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			&c.prefix,
 			c.shared.client.clone(),
 			c.shared.reg.clone(),
+			&c.name,
 			c.shared.value_typ,
 			c.shared.value_default.clone(),
 		);
@@ -667,7 +729,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			key = &key[e..];
 			Hex::into_untyped(Hex(bytes))?
 		} else {
-			decode_value(&mut key, &c.shared.reg, key_ty, false)?
+			decode_value_or_default(&mut key, &c.shared.reg, &c.name, key_ty, false, c.shared.value_default.clone(), true)?
 		};
 		// dbg!(&value);
 		let value_len = key_plus_value_len - key.len();
@@ -708,6 +770,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 		}
 		let c = MapFetcherContext {
 			shared: c.shared.clone(),
+			name: Rc::new(value.to_string()),
 			prefix: Rc::new(prefix),
 			current_key_depth: c.current_key_depth + 1,
 		};
@@ -739,6 +802,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 /// Fetch keys of some storage and cache them, returning the resulting cache value.
 fn make_fetch_keys_storage(
 	client: Client,
+	name: String,
 	prefix: Vec<u8>,
 	reg: Rc<PortableRegistry>,
 	keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)>,
@@ -757,6 +821,7 @@ fn make_fetch_keys_storage(
 			value_default,
 			opts,
 		}),
+		name: Rc::new(name),
 		prefix: Rc::new(prefix),
 		current_key_depth: 0,
 	})
@@ -829,13 +894,14 @@ fn make_pallet_key(
 				}
 
 				out.field(entry.name.clone()).try_thunk(simple_thunk! {
+					let entry_name: String = entry.name.clone();
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
 					let v: UntrackedSymbol<TypeId> = v;
 					let default: Option<Vec<u8>> = default;
 					let registry: Rc<PortableRegistry> = registry.clone();
-					Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, v, default)?)
+					Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, &entry_name, v, default)?)
 				})?;
 			}
 			StorageEntryType::Map {
@@ -871,6 +937,7 @@ fn make_pallet_key(
 					.try_value(Val::Num(NumValue::new(keys.len() as f64).unwrap()))?;
 
 				out.field(entry.name.clone()).try_thunk(simple_thunk! {
+					let entry_name: String = entry.name.clone();
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
@@ -882,6 +949,7 @@ fn make_pallet_key(
 					let opts: ChainOpts = opts;
 					Thunk::<Val>::evaluated(make_fetch_keys_storage(
 						client,
+						entry_name,
 						entry_key,
 						registry,
 						keys,
@@ -1238,7 +1306,6 @@ fn builtin_decode_extrinsic(
 	value: Hex,
 	additional_signed: Option<NativeFn<((Val,), ObjValue)>>,
 ) -> Result<ExtrinsicData> {
-	// decode_value(&mut value.0.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
 	let encoding = guess_extrinsic_encoding(&this.meta)?;
 
 	let data = value.0;

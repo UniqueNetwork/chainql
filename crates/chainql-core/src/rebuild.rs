@@ -74,7 +74,7 @@ fn rebuild_inner(
 		let data = ObjValue::from_untyped(data)?;
 		handled_prefixes.push(pallet_prefix);
 		out.push_prefix(&pallet_prefix);
-		eprintln!("rebuilding pallet {}", storage.prefix);
+		tracing::info!("rebuilding pallet {}", storage.prefix);
 		rebuild_pallet(data, out, &meta.types, storage)
 			.with_description(|| format!("pallet <{key}> rebuild"))?;
 		out.pop_prefix()
@@ -137,7 +137,7 @@ fn rebuild_storage_entry(
 			key,
 			value,
 		} => {
-			eprintln!("rebuilding storage {}", meta.name);
+			tracing::info!("rebuilding storage {}", meta.name);
 			let keys = normalize_storage_map_keys(reg, *key, hashers)?;
 			rebuild_storage(data, out, reg, &keys, *value, 0)
 		}
