@@ -14,7 +14,7 @@ use jrsonnet_gcmodule::Trace;
 use parity_scale_codec::Decode;
 use thiserror::Error;
 use tokio::runtime::Handle;
-use tracing::{debug, info, info_span, Span};
+use tracing::{debug, info, info_span, Instrument, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
 use url::Url;
@@ -280,47 +280,42 @@ impl LiveClient {
 	}
 
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
-		let header_span = info_span!("preload_storage", indicatif.pb_show = true);
-		header_span
-			.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
-		header_span.pb_set_length(keys.len() as u64);
-		header_span.pb_set_message("preloading keys");
-		header_span.pb_set_finish_message("all keys preloaded");
-
-		let header_span_enter = header_span.enter();
+		let progress_span = info_span!("preload_storage", indicatif.pb_show = true);
+		progress_span.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
+		progress_span.pb_set_length(keys.len() as u64);
+		progress_span.pb_set_message("preloading keys");
+		progress_span.pb_set_finish_message("all keys preloaded");
 
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
 				keys.chunks(self.keys_chunk_size)
-					.map(|slice| self.preload_storage_fallback(slice)),
+					.map(|slice| self.preload_storage_fallback(progress_span.clone(), slice)),
 			)
 			.buffer_unordered(self.max_workers)
-			.try_collect::<()>(),
+			.try_collect::<()>()
+			.instrument(progress_span.clone()),
 		)?;
-
-		drop(header_span_enter);
-		drop(header_span);
 
 		info!("preloaded {} keys", keys.len());
 
 		Ok(())
 	}
 
-	async fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
+	async fn preload_storage_fallback(&self, progress_span: Span, keys: &[&Vec<u8>]) -> Result<()> {
 		let chunk_size = keys.len();
-		match self.preload_storage_naive(keys).await {
+		match self.preload_storage_naive(progress_span.clone(), keys).await {
 			Ok(()) => Ok(()),
 			Err(Error::Rpc(RpcError::Server { code, .. })) if code == -32702 || code == -32008 => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
-				self.preload_storage_fallback(keysa).boxed_local().await?;
-				self.preload_storage_fallback(keysb).boxed_local().await?;
+				self.preload_storage_fallback(progress_span.clone(), keysa).boxed_local().await?;
+				self.preload_storage_fallback(progress_span.clone(), keysb).boxed_local().await?;
 				Ok(())
 			}
 			Err(err) => Err(err),
 		}
 	}
-	async fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
+	async fn preload_storage_naive(&self, progress_span: Span, keys: &[&Vec<u8>]) -> Result<()> {
 		let mut list = Vec::new();
 		{
 			let cache = self.key_value_cache.borrow_mut();
@@ -341,7 +336,7 @@ impl LiveClient {
 			.query_storage(list, Some(self.block.as_ref()))
 			.await?;
 
-		Span::current().pb_inc(chunk_size);
+		progress_span.pb_inc(chunk_size);
 
 		if value.is_empty() {
 			return Ok(());
