@@ -11,6 +11,7 @@ frame-metadata.workspace = true
 tokio.workspace = true
 jrsonnet-evaluator.workspace = true
 jrsonnet-gcmodule.workspace = true
+tracing.workspace = true
 hex = "0.4.3"
 parity-scale-codec = { version = "3.7.5", features = ["derive"] }
 scale-info = "2.11.6"
@@ -31,7 +32,6 @@ directories = "6.0.0"
 futures = "0.3.31"
 reqwest = { version = "0.12.23", features = ["json"] }
 url = "2.5.7"
-tracing = "0.1.41"
 tracing-indicatif = "0.3.13"
 jsonrpsee = { version = "0.26.0", features = ["macros", "ws-client"] }
 async-trait = "0.1.89"
