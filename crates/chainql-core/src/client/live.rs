@@ -14,7 +14,7 @@ use jrsonnet_gcmodule::Trace;
 use parity_scale_codec::Decode;
 use thiserror::Error;
 use tokio::runtime::Handle;
-use tracing::{debug, info, info_span, Instrument, Span};
+use tracing::{debug, error, info, info_span, Instrument, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
 use url::Url;
@@ -111,7 +111,7 @@ where
 			return default;
 		}
 		Err(env::VarError::NotUnicode(err)) => {
-			info!("Invalid env var '{var}' value: {err:?}");
+			error!("invalid env var '{var}' value: {err:?}");
 			std::process::exit(1);
 		}
 	};
@@ -119,7 +119,7 @@ where
 	match value.parse::<T>() {
 		Ok(parsed) => parsed,
 		Err(err) => {
-			info!("Invalid env var '{var}' value '{value}': {err}");
+			error!("invalid env var '{var}' value '{value}': {err}");
 			std::process::exit(1);
 		}
 	}
