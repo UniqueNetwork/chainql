@@ -56,12 +56,7 @@ impl HttpClient {
 			.send()
 			.await?;
 
-		if [
-			StatusCode::TOO_MANY_REQUESTS,
-			StatusCode::PAYLOAD_TOO_LARGE,
-			StatusCode::GATEWAY_TIMEOUT,
-		]
-		.contains(&response.status())
+		if [StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT].contains(&response.status())
 		{
 			drop(rate_limiter_guard);
 			return Box::pin(self.call(method, params)).await;
@@ -69,7 +64,12 @@ impl HttpClient {
 
 		rate_limiter_guard.succeeded();
 
-		if response.status() != StatusCode::OK {
+		if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+			return Err(RpcError::Server {
+				code: 4002,
+				message: "request limit exceeded at http level (status code 413)".to_owned(),
+			});
+		} else if response.status() != StatusCode::OK {
 			return Err(RpcError::BadResponse(format!(
 				"unexpected status code {}",
 				response.status()
