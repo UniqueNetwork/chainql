@@ -4,7 +4,7 @@ use frame_metadata::{
 	PalletStorageMetadata, RuntimeMetadataV14, StorageEntryMetadata, StorageEntryType,
 	StorageHasher,
 };
-use jrsonnet_evaluator::{bail, typed::Typed, ObjValue, Result, ResultExt, Val};
+use jrsonnet_evaluator::{bail, runtime_error, typed::Typed, ObjValue, Result, ResultExt, Val};
 use scale_info::{form::PortableForm, interner::UntrackedSymbol, PortableRegistry};
 use sp_core::twox_128;
 
@@ -106,7 +106,17 @@ fn rebuild_pallet(
 		};
 		let storage_prefix = twox_128(entry.name.as_bytes());
 
-		let data = data?;
+		let data = match data {
+			Ok(data) => data,
+			Err(err) => {
+				return Err(runtime_error!(
+					"failed to rebuild storage {key}: {}",
+					// remove a lot of nested "runtime error" messages
+					err.to_string().replace("runtime error: ", "")
+				));
+			}
+		};
+
 		handled_prefixes.push(storage_prefix);
 		out.push_prefix(&storage_prefix);
 		rebuild_storage_entry(data, out, reg, entry)

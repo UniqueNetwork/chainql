@@ -525,7 +525,7 @@ where
 						let mut obj = ObjValueBuilder::new();
 						let val =
 							decode_obj_value(dec, reg, &var.fields, compact).map_err(|err| {
-								runtime_error!("broken variant {}: {}", var.name, err)
+								runtime_error!("failed to decode {} variant: {}", var.name, err)
 							})?;
 						obj.field(var.name.as_str()).try_value(val)?;
 
