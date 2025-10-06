@@ -8,6 +8,7 @@ use tracing_indicatif::{filter::{hide_indicatif_span_fields, IndicatifFilter}, I
 use tracing_subscriber::{
 	fmt::{format::DefaultFields, writer::MakeWriterExt}, layer::SubscriberExt, util::SubscriberInitExt, Layer,
 };
+use tracing::Level;
 
 /// chainql
 #[derive(Parser)]
@@ -35,7 +36,7 @@ fn main_jrsonnet(opts: Opts) -> Result<String> {
 			tracing_subscriber::fmt::layer().without_time().with_writer(
 				indicatif_layer
 					.get_stderr_writer()
-					.with_max_level(tracing::Level::INFO),
+					.with_max_level(Level::INFO),
 			),
 		)
 		.with(indicatif_layer.with_filter(IndicatifFilter::new(false)))

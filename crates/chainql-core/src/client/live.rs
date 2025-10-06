@@ -14,7 +14,7 @@ use jrsonnet_gcmodule::Trace;
 use parity_scale_codec::Decode;
 use thiserror::Error;
 use tokio::runtime::Handle;
-use tracing::{info_span, Span};
+use tracing::{debug, info, info_span, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
 use url::Url;
@@ -111,7 +111,7 @@ where
 			return default;
 		}
 		Err(env::VarError::NotUnicode(err)) => {
-			tracing::info!("Invalid env var '{var}' value: {err:?}");
+			info!("Invalid env var '{var}' value: {err:?}");
 			std::process::exit(1);
 		}
 	};
@@ -119,7 +119,7 @@ where
 	match value.parse::<T>() {
 		Ok(parsed) => parsed,
 		Err(err) => {
-			tracing::info!("Invalid env var '{var}' value '{value}': {err}");
+			info!("Invalid env var '{var}' value '{value}': {err}");
 			std::process::exit(1);
 		}
 	}
@@ -192,7 +192,7 @@ impl LiveClient {
 				.collect());
 		}
 
-		tracing::info!("loading keys by prefix {prefix_str}");
+		info!("loading keys by prefix {prefix_str}");
 
 		let mut fetched = vec![];
 
@@ -211,12 +211,12 @@ impl LiveClient {
 				Ok(v) => v,
 				Err(RpcError::Server { code, message }) if code == 4002 => {
 					if let Ok(v) = text_error::count_exceeds_max(&message) {
-						tracing::debug!(
+						debug!(
 							"server didn't like our paged keys limit, resetting to {v}"
 						);
 						self.learned_max_chunk_size.set(v);
 					} else {
-						tracing::debug!("server didn't like our paged keys limit, and we can't extract its limit from message '{message}', reducing in half");
+						debug!("server didn't like our paged keys limit, and we can't extract its limit from message '{message}', reducing in half");
 						self.learned_max_chunk_size
 							.set(self.learned_max_chunk_size.get() / 2);
 						if self.learned_max_chunk_size.get() == 0 {
@@ -231,12 +231,12 @@ impl LiveClient {
 			let has_more = chunk.len() == self.learned_max_chunk_size.get();
 			let len = chunk.len();
 			if len != 0 {
-				tracing::info!("loaded {len} keys for pref {}", prefix_str);
+				info!("loaded {len} keys for pref {}", prefix_str);
 			}
 			fetched.extend(chunk);
 			if !has_more {
 				if !fetched.is_empty() {
-					tracing::info!("loaded keys, last chunk was {len}");
+					info!("loaded keys, last chunk was {len}");
 				}
 				break;
 			}
@@ -260,7 +260,7 @@ impl LiveClient {
 			return Ok(cache.get(key).expect("cached").clone());
 		}
 		let key_str = format!("0x{}", hex::encode(key));
-		tracing::info!("loading key {key_str}");
+		info!("loading key {key_str}");
 
 		let handle = Handle::current();
 		let value = handle.block_on(
@@ -302,7 +302,7 @@ impl LiveClient {
 		drop(header_span_enter);
 		drop(header_span);
 
-		tracing::info!("preloaded {} keys", keys.len());
+		info!("preloaded {} keys", keys.len());
 
 		Ok(())
 	}
@@ -365,7 +365,7 @@ impl LiveClient {
 		Ok(())
 	}
 	pub fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
-		tracing::info!("loading metadata");
+		info!("loading metadata");
 		let handle = Handle::current();
 		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_ref())))?;
 		assert!(meta.starts_with("0x"));
@@ -401,7 +401,7 @@ impl LiveClient {
 			}
 			return Ok(false);
 		}
-		tracing::info!("checking for keys under {prefix:0>2x?}");
+		info!("checking for keys under {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		let handle = Handle::current();
