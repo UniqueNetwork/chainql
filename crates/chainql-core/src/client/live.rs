@@ -14,7 +14,7 @@ use jrsonnet_gcmodule::Trace;
 use parity_scale_codec::Decode;
 use thiserror::Error;
 use tokio::runtime::Handle;
-use tracing::{debug, error, info, info_span, Instrument, Span};
+use tracing::{debug, error, info, info_span, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_indicatif::style::ProgressStyle;
 use url::Url;
@@ -286,6 +286,8 @@ impl LiveClient {
 		progress_span.pb_set_message("preloading keys");
 		progress_span.pb_set_finish_message("all keys preloaded");
 
+		let progress_span_guard = progress_span.enter();
+
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
@@ -294,8 +296,10 @@ impl LiveClient {
 			)
 			.buffer_unordered(self.max_workers)
 			.try_collect::<()>()
-			.instrument(progress_span.clone()),
 		)?;
+
+		drop(progress_span_guard);
+		drop(progress_span);
 
 		info!("preloaded {} keys", keys.len());
 
