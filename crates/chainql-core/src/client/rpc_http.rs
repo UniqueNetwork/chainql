@@ -40,9 +40,7 @@ impl HttpClient {
 		P: Serialize,
 		T: DeserializeOwned,
 	{
-		let mut rate_limiter_guard = self.rate_limiter.request_pending();
-
-		self.rate_limiter.wait().await;
+		let mut rate_limiter_guard = self.rate_limiter.request_pending().await;
 
 		let body = serde_json::json!({
 			"jsonrpc": "2.0",
@@ -58,8 +56,12 @@ impl HttpClient {
 			.send()
 			.await?;
 
-		if response.status() == StatusCode::TOO_MANY_REQUESTS
-			|| response.status() == StatusCode::GATEWAY_TIMEOUT
+		if [
+			StatusCode::TOO_MANY_REQUESTS,
+			StatusCode::PAYLOAD_TOO_LARGE,
+			StatusCode::GATEWAY_TIMEOUT,
+		]
+		.contains(&response.status())
 		{
 			drop(rate_limiter_guard);
 			return Box::pin(self.call(method, params)).await;
@@ -171,7 +173,9 @@ impl RateLimiter {
 		sleep(sleep_duration).await
 	}
 
-	fn request_pending(&self) -> RateLimiterGuard<'_> {
+	async fn request_pending(&self) -> RateLimiterGuard<'_> {
+		self.wait().await;
+
 		RateLimiterGuard {
 			rate_limiter: self,
 			succeeded: false,
@@ -187,9 +191,9 @@ impl RateLimiter {
 	fn request_limited(&self) {
 		let mut this = self.0.lock().expect("not poisoned");
 
-		let new_rps = ((this.rpm as f32) * this.decrease_factor).round() as u32;
+		let new_rps = ((this.rpm as f32) * this.decrease_factor).floor() as u32;
 
-		this.rpm = if new_rps > 0 { new_rps } else { 1 };
+		this.rpm = new_rps.max(1);
 	}
 }
 
