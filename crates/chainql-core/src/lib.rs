@@ -483,7 +483,7 @@ where
 	if let Err(err) = &value
 		&& use_default_for_corrupted_storages
 	{
-		warn!("Storage {name} is corrupted. Default values will be used. Error: {err}");
+		warn!("storage {name} is corrupted, default values will be used: {err}");
 
 		value = if let Some(default) = default {
 			decode_value(&mut default.as_ref(), reg, typ, compact)
