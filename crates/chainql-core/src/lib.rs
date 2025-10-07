@@ -119,9 +119,9 @@ where
 	Compact<T>: DecodeExt,
 {
 	if compact {
-		<Compact<T>>::decode(dec).map(|v| v.0)
+		<Compact<T>>::decode_ext(dec).map(|v| v.0)
 	} else {
-		<T as DecodeExt>::decode(dec)
+		<T as DecodeExt>::decode_ext(dec)
 	}
 }
 
@@ -436,7 +436,7 @@ trait DecodeExt
 where
 	Self: parity_scale_codec::Decode,
 {
-	fn decode<I: Input>(input: &mut I) -> Result<Self> {
+	fn decode_ext<I: Input>(input: &mut I) -> Result<Self> {
 		let remaining = input
 			.remaining_len()
 			.map_err(|err| runtime_error!("codec: failed to read remaining len: {err}"))?;
@@ -512,7 +512,7 @@ where
 		match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
 			TypeDef::Composite(c) => decode_obj_value(dec, reg, &c.fields, compact)?,
 			TypeDef::Variant(e) => {
-				let idx = u8::decode(dec)?;
+				let idx = u8::decode_ext(dec)?;
 				for var in e.variants.iter() {
 					if var.index == idx {
 						if var.fields.is_empty() {
@@ -535,12 +535,12 @@ where
 						.type_def,
 					TypeDef::Primitive(TypeDefPrimitive::U8)
 				) {
-					let raw = <Vec<u8>>::decode(dec)?;
+					let raw = <Vec<u8>>::decode_ext(dec)?;
 					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
 
 				let mut out = vec![];
-				let size = <Compact<u32>>::decode(dec)?;
+				let size = <Compact<u32>>::decode_ext(dec)?;
 				for _ in 0..size.0 {
 					let val = decode_value(dec, reg, seq.type_param, compact)?;
 					out.push(val);
@@ -556,7 +556,7 @@ where
 				) {
 					let mut raw = vec![0; arr.len as usize];
 					for v in raw.iter_mut() {
-						*v = u8::decode(dec).expect("byte");
+						*v = u8::decode_ext(dec).expect("byte");
 					}
 					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
@@ -578,16 +578,16 @@ where
 			}
 			TypeDef::Primitive(p) => match p {
 				TypeDefPrimitive::Bool => {
-					let val = bool::decode(dec)?;
+					let val = bool::decode_ext(dec)?;
 					Val::Bool(val)
 				}
 				TypeDefPrimitive::Char => bail!("char not supported"),
 				TypeDefPrimitive::Str => {
-					let val = String::decode(dec)?;
+					let val = String::decode_ext(dec)?;
 					Val::string(val)
 				}
 				TypeDefPrimitive::U8 => {
-					let val = u8::decode(dec)?;
+					let val = u8::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::U16 => {
@@ -608,31 +608,31 @@ where
 				}
 				TypeDefPrimitive::U256 => {
 					ensure!(!compact, "u256 can't be compact");
-					let val = U256::decode(dec)?;
+					let val = U256::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I8 => {
-					let val = i8::decode(dec)?;
+					let val = i8::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I16 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i16::decode(dec)?;
+					let val = i16::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I32 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i32::decode(dec)?;
+					let val = i32::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I64 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i64::decode(dec)?;
+					let val = i64::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I128 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i128::decode(dec)?;
+					let val = i128::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I256 => {
@@ -1189,7 +1189,7 @@ fn builtin_decode_value(this: &builtin_decode_value, value: Hex) -> Result<Val> 
 ))]
 fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<Hex> {
 	let typ = Compact(typ).encode();
-	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
+	let sym = <UntrackedSymbol<TypeId>>::decode_ext(&mut typ.as_slice()).expect("just encoded u32");
 	let mut out = Vec::new();
 	encode_value(&this.reg, sym, false, v, &mut out, false)?;
 
@@ -1204,7 +1204,7 @@ fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<Hex> {
 ))]
 fn builtin_decode(this: &builtin_decode, typ: u32, v: Hex) -> Result<Val> {
 	let typ = Compact(typ).encode();
-	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
+	let sym = <UntrackedSymbol<TypeId>>::decode_ext(&mut typ.as_slice()).expect("just encoded u32");
 
 	decode_value(&mut v.0.as_slice(), &this.reg, sym, false).map(Val::from)
 }
@@ -1344,10 +1344,10 @@ fn builtin_decode_extrinsic(
 	let mut cursor = data.as_slice();
 
 	let length =
-		<Compact<u32>>::decode(&mut cursor).map_err(|e| runtime_error!("bad length: {e}"))?;
+		<Compact<u32>>::decode_ext(&mut cursor).map_err(|e| runtime_error!("bad length: {e}"))?;
 	ensure!(cursor.len() == length.0 as usize, "length mismatch");
 
-	let version = u8::decode(&mut cursor).map_err(|e| runtime_error!("bad ver: {e}"))?;
+	let version = u8::decode_ext(&mut cursor).map_err(|e| runtime_error!("bad ver: {e}"))?;
 
 	let is_signed = version & 0b10000000 != 0;
 	let version = version & 0b01111111;
@@ -1654,7 +1654,7 @@ fn builtin_dump(
 		)
 		.map_err(|e| runtime_error!("bad metadata: {e}"))?,
 		Either2::B(meta) => {
-			match RuntimeMetadataPrefixed::decode(&mut meta.0.as_slice())
+			match RuntimeMetadataPrefixed::decode_ext(&mut meta.0.as_slice())
 				.map_err(|e| runtime_error!("bad metadata: {e}"))?
 				.1
 			{
