@@ -1,6 +1,6 @@
 use std::{io::Read, process};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
 use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State};
 use tokio::runtime::Handle;
@@ -10,9 +10,35 @@ use tracing_subscriber::{
 };
 use tracing::Level;
 
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum CorruptedStorageStrategy {
+	/// Return error when storage decoding fails.
+	#[default]
+	RaiseError,
+
+	/// Use default values from metadata
+	/// with warning about every corrupted storage.
+	UseDefault,
+}
+
+#[derive(Parser, Clone, Copy)]
+#[clap(next_help_heading = "OPTIONS")]
+struct Options {
+	/// This flag specifies how chainql will handle decoding errors.
+	///
+	/// If you needed the flag, you've found a bug.
+	/// Please contact the developer to fix the storage.
+	///
+	/// There's no guarantee that the chain will start and function correctly with corrupted data.
+	#[arg(long, value_enum, default_value_t)]
+	corrupted_storage_strategy: CorruptedStorageStrategy,
+}
+
 /// chainql
 #[derive(Parser)]
 struct Opts {
+	#[command(flatten)]
+	options: Options,
 	#[clap(flatten)]
 	input: InputOpts,
 	#[clap(flatten)]
@@ -26,6 +52,7 @@ struct Opts {
 	#[clap(long, short = 'S')]
 	string: bool,
 }
+
 /// Set up Jrsonnet.
 fn main_jrsonnet(opts: Opts) -> Result<String> {
 	let indicatif_layer = IndicatifLayer::new()

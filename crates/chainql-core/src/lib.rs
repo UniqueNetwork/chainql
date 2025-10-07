@@ -14,11 +14,17 @@ use frame_metadata::{
 };
 use hex::{builtin_from_hex, builtin_to_hex, Hex};
 use jrsonnet_evaluator::{
-	bail, error::{Error as JrError, Result}, function::builtin, in_description_frame, runtime_error, typed::{Either2, NativeFn, Typed}, val::{ArrValue, NumValue, ThunkValue}, ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, Thunk, Val
+	bail,
+	error::{Error as JrError, Result},
+	function::builtin,
+	in_description_frame, runtime_error,
+	typed::{Either2, NativeFn, Typed},
+	val::{ArrValue, NumValue, ThunkValue},
+	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, Thunk, Val,
 };
 use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
-use parity_scale_codec::{Compact, Decode, Encode, Input, Output};
+use parity_scale_codec::{Compact, Encode, Input, Output};
 use rebuild::rebuild;
 use scale_info::{
 	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
@@ -30,8 +36,8 @@ use sp_core::{
 	ByteArray, U256,
 };
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
+use tracing::{info, warn};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
-use tracing::info;
 
 use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
 
@@ -105,22 +111,17 @@ fn missing_resolve() -> JrError {
 	runtime_error!("invalid metadata: missing resolve key")
 }
 
-/// Return a codec error.
-fn codec_error(err: parity_scale_codec::Error) -> JrError {
-	runtime_error!("codec: {}", err)
-}
-
 /// Decode a value as it is or into compact.
 fn decode_maybe_compact<I, T>(dec: &mut I, compact: bool) -> Result<T>
 where
 	I: Input,
-	T: Decode,
-	Compact<T>: Decode,
+	T: DecodeExt,
+	Compact<T>: DecodeExt,
 {
 	if compact {
-		<Compact<T>>::decode(dec).map(|v| v.0).map_err(codec_error)
+		<Compact<T>>::decode_ext(dec).map(|v| v.0)
 	} else {
-		T::decode(dec).map_err(codec_error)
+		<T as DecodeExt>::decode_ext(dec)
 	}
 }
 
@@ -188,9 +189,10 @@ where
 	}
 	let mut out = ObjValueBuilder::new();
 	for (i, f) in typ.iter().enumerate() {
-		let field = decode_value(dec, reg, f.ty, compact)?;
-		out.field(f.name.clone().unwrap_or_else(|| format!("unnamed{}", i)))
-			.try_value(field)?;
+		let field_name = f.name.clone().unwrap_or_else(|| format!("unnamed{i}"));
+		let field = decode_value(dec, reg, f.ty, compact)
+			.with_description(|| format!("field <{field_name}> decode"))?;
+		out.field(field_name).try_value(field)?;
 	}
 	Ok(Val::Obj(out.build()))
 }
@@ -430,6 +432,69 @@ where
 	Ok(())
 }
 
+trait DecodeExt
+where
+	Self: parity_scale_codec::Decode,
+{
+	fn decode_ext<I: Input>(input: &mut I) -> Result<Self> {
+		let remaining = input
+			.remaining_len()
+			.map_err(|err| runtime_error!("codec: failed to read remaining len: {err}"))?;
+
+		match <Self as parity_scale_codec::Decode>::decode(input) {
+			Ok(value) => Ok(value),
+			Err(err) => {
+				if err == "Not enough data to fill buffer".into()
+					&& let Some(expected) = Self::encoded_fixed_size()
+					&& let Some(remaining) = remaining
+				{
+					Err(runtime_error!(
+						"codec: not enough bytes to decode {}: expected {} bytes, but only {} byte is available",
+						core::any::type_name::<Self>(),
+						expected,
+						remaining
+					))
+				} else {
+					Err(runtime_error!("codec: {err}"))
+				}
+			}
+		}
+	}
+}
+
+impl<T> DecodeExt for T where T: parity_scale_codec::Decode {}
+
+/// Decode some value [`dec`] into the type [`typ`] in the registry [`reg`].
+/// Returns default if decode failed.
+fn decode_value_or_default<I>(
+	dec: &mut I,
+	reg: &PortableRegistry,
+	name: &str,
+	typ: UntrackedSymbol<TypeId>,
+	compact: bool,
+	default: Option<Vec<u8>>,
+	use_default_for_corrupted_storages: bool,
+) -> Result<Val>
+where
+	I: Input,
+{
+	let mut value = decode_value(dec, reg, typ, compact);
+
+	if let Err(err) = &value
+		&& use_default_for_corrupted_storages
+	{
+		warn!("storage {name} is corrupted, default values will be used: {err}");
+
+		value = if let Some(default) = default {
+			decode_value(&mut default.as_ref(), reg, typ, compact)
+		} else {
+			Ok(Val::Null)
+		};
+	}
+
+	value
+}
+
 /// Decode some value [`dec`] into the type [`typ`] in the registry [`reg`].
 fn decode_value<I>(
 	dec: &mut I,
@@ -447,14 +512,15 @@ where
 		match &reg.resolve(typ.id).ok_or_else(missing_resolve)?.type_def {
 			TypeDef::Composite(c) => decode_obj_value(dec, reg, &c.fields, compact)?,
 			TypeDef::Variant(e) => {
-				let idx = u8::decode(dec).map_err(codec_error)?;
+				let idx = u8::decode_ext(dec)?;
 				for var in e.variants.iter() {
 					if var.index == idx {
 						if var.fields.is_empty() {
 							return Ok(Val::string(var.name.as_str()));
 						}
 						let mut obj = ObjValueBuilder::new();
-						let val = decode_obj_value(dec, reg, &var.fields, compact)?;
+						let val = decode_obj_value(dec, reg, &var.fields, compact)
+							.with_description(|| format!("variant <{}> decode", var.name))?;
 						obj.field(var.name.as_str()).try_value(val)?;
 
 						return Ok(Val::Obj(obj.build()));
@@ -469,12 +535,12 @@ where
 						.type_def,
 					TypeDef::Primitive(TypeDefPrimitive::U8)
 				) {
-					let raw = <Vec<u8>>::decode(dec).map_err(codec_error)?;
+					let raw = <Vec<u8>>::decode_ext(dec)?;
 					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
 
 				let mut out = vec![];
-				let size = <Compact<u32>>::decode(dec).map_err(codec_error)?;
+				let size = <Compact<u32>>::decode_ext(dec)?;
 				for _ in 0..size.0 {
 					let val = decode_value(dec, reg, seq.type_param, compact)?;
 					out.push(val);
@@ -490,7 +556,7 @@ where
 				) {
 					let mut raw = vec![0; arr.len as usize];
 					for v in raw.iter_mut() {
-						*v = u8::decode(dec).expect("byte");
+						*v = u8::decode_ext(dec).expect("byte");
 					}
 					return Hex::into_untyped(Hex(raw.as_slice().into()));
 				}
@@ -512,16 +578,16 @@ where
 			}
 			TypeDef::Primitive(p) => match p {
 				TypeDefPrimitive::Bool => {
-					let val = bool::decode(dec).map_err(codec_error)?;
+					let val = bool::decode_ext(dec)?;
 					Val::Bool(val)
 				}
 				TypeDefPrimitive::Char => bail!("char not supported"),
 				TypeDefPrimitive::Str => {
-					let val = String::decode(dec).map_err(codec_error)?;
+					let val = String::decode_ext(dec)?;
 					Val::string(val)
 				}
 				TypeDefPrimitive::U8 => {
-					let val = u8::decode(dec).map_err(codec_error)?;
+					let val = u8::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::U16 => {
@@ -542,31 +608,31 @@ where
 				}
 				TypeDefPrimitive::U256 => {
 					ensure!(!compact, "u256 can't be compact");
-					let val = U256::decode(dec).map_err(codec_error)?;
+					let val = U256::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I8 => {
-					let val = i8::decode(dec).map_err(codec_error)?;
+					let val = i8::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I16 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i16::decode(dec).map_err(codec_error)?;
+					let val = i16::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I32 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i32::decode(dec).map_err(codec_error)?;
+					let val = i32::decode_ext(dec)?;
 					Val::Num(val.into())
 				}
 				TypeDefPrimitive::I64 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i64::decode(dec).map_err(codec_error)?;
+					let val = i64::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I128 => {
 					ensure!(!compact, "int can't be compact");
-					let val = i128::decode(dec).map_err(codec_error)?;
+					let val = i128::decode_ext(dec)?;
 					bigint_decode(val)?
 				}
 				TypeDefPrimitive::I256 => {
@@ -584,12 +650,22 @@ fn fetch_decode_key(
 	key: &[u8],
 	client: Client,
 	registry: Rc<PortableRegistry>,
+	name: &str,
 	typ: UntrackedSymbol<TypeId>,
 	default: Option<Vec<u8>>,
+	use_default_for_corrupted_storages: bool,
 ) -> Result<Val> {
 	let value = client.get_storage(key)?;
 	Ok(if let Some(value) = value {
-		decode_value(&mut &value[..], &registry, typ, false)?
+		decode_value_or_default(
+			&mut &value[..],
+			&registry,
+			name,
+			typ,
+			false,
+			default,
+			use_default_for_corrupted_storages,
+		)?
 	} else if let Some(default) = default {
 		decode_value(&mut &default[..], &registry, typ, false)?
 	} else {
@@ -612,6 +688,7 @@ struct SharedMapFetcherContext {
 #[derive(Clone)]
 struct MapFetcherContext {
 	shared: Rc<SharedMapFetcherContext>,
+	name: Rc<String>,
 	prefix: Rc<Vec<u8>>,
 	current_key_depth: usize,
 }
@@ -625,16 +702,16 @@ impl MapFetcherContext {
 
 /// Cache and objectify all keys from the fetched and return the resulting cache.
 fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
-	let key = if let Some(k) = c.key() {
-		k
-	} else {
+	let Some(key) = c.key() else {
 		// TODO: bulk fetching for last key and assert!(!keys.is_empty())
 		return fetch_decode_key(
 			&c.prefix,
 			c.shared.client.clone(),
 			c.shared.reg.clone(),
+			&c.name,
 			c.shared.value_typ,
 			c.shared.value_default.clone(),
+			c.shared.opts.use_default_for_corrupted_storages(),
 		);
 	};
 	let hash_bytes = match key.0 {
@@ -667,7 +744,15 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			key = &key[e..];
 			Hex::into_untyped(Hex(bytes))?
 		} else {
-			decode_value(&mut key, &c.shared.reg, key_ty, false)?
+			decode_value_or_default(
+				&mut key,
+				&c.shared.reg,
+				&c.name,
+				key_ty,
+				false,
+				c.shared.value_default.clone(),
+				c.shared.opts.use_default_for_corrupted_storages(),
+			)?
 		};
 		// dbg!(&value);
 		let value_len = key_plus_value_len - key.len();
@@ -708,6 +793,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 		}
 		let c = MapFetcherContext {
 			shared: c.shared.clone(),
+			name: Rc::new(value.to_string()),
 			prefix: Rc::new(prefix),
 			current_key_depth: c.current_key_depth + 1,
 		};
@@ -739,6 +825,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 /// Fetch keys of some storage and cache them, returning the resulting cache value.
 fn make_fetch_keys_storage(
 	client: Client,
+	name: String,
 	prefix: Vec<u8>,
 	reg: Rc<PortableRegistry>,
 	keys: Vec<(StorageHasher, UntrackedSymbol<TypeId>)>,
@@ -757,6 +844,7 @@ fn make_fetch_keys_storage(
 			value_default,
 			opts,
 		}),
+		name: Rc::new(name),
 		prefix: Rc::new(prefix),
 		current_key_depth: 0,
 	})
@@ -829,13 +917,23 @@ fn make_pallet_key(
 				}
 
 				out.field(entry.name.clone()).try_thunk(simple_thunk! {
+					let entry_name: String = entry.name.clone();
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
-					let v: UntrackedSymbol<TypeId> = v;
+					let typ: UntrackedSymbol<TypeId> = v;
 					let default: Option<Vec<u8>> = default;
 					let registry: Rc<PortableRegistry> = registry.clone();
-					Thunk::<Val>::evaluated(fetch_decode_key(entry_key.as_slice(), client, registry, v, default)?)
+					let use_default_for_corrupted_storages: bool = opts.use_default_for_corrupted_storages();
+					Thunk::<Val>::evaluated(fetch_decode_key(
+						entry_key.as_slice(),
+						client,
+						registry,
+						&entry_name,
+						typ,
+						default,
+						use_default_for_corrupted_storages,
+					)?)
 				})?;
 			}
 			StorageEntryType::Map {
@@ -871,6 +969,7 @@ fn make_pallet_key(
 					.try_value(Val::Num(NumValue::new(keys.len() as f64).unwrap()))?;
 
 				out.field(entry.name.clone()).try_thunk(simple_thunk! {
+					let entry_name: String = entry.name.clone();
 					let entry_key: Vec<u8> = entry_key;
 					let client: Client = client.clone();
 					#[trace(skip)]
@@ -882,6 +981,7 @@ fn make_pallet_key(
 					let opts: ChainOpts = opts;
 					Thunk::<Val>::evaluated(make_fetch_keys_storage(
 						client,
+						entry_name,
 						entry_key,
 						registry,
 						keys,
@@ -1089,7 +1189,7 @@ fn builtin_decode_value(this: &builtin_decode_value, value: Hex) -> Result<Val> 
 ))]
 fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<Hex> {
 	let typ = Compact(typ).encode();
-	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
+	let sym = <UntrackedSymbol<TypeId>>::decode_ext(&mut typ.as_slice()).expect("just encoded u32");
 	let mut out = Vec::new();
 	encode_value(&this.reg, sym, false, v, &mut out, false)?;
 
@@ -1104,7 +1204,7 @@ fn builtin_encode(this: &builtin_encode, typ: u32, v: Val) -> Result<Hex> {
 ))]
 fn builtin_decode(this: &builtin_decode, typ: u32, v: Hex) -> Result<Val> {
 	let typ = Compact(typ).encode();
-	let sym = <UntrackedSymbol<TypeId>>::decode(&mut typ.as_slice()).expect("just encoded u32");
+	let sym = <UntrackedSymbol<TypeId>>::decode_ext(&mut typ.as_slice()).expect("just encoded u32");
 
 	decode_value(&mut v.0.as_slice(), &this.reg, sym, false).map(Val::from)
 }
@@ -1238,17 +1338,16 @@ fn builtin_decode_extrinsic(
 	value: Hex,
 	additional_signed: Option<NativeFn<((Val,), ObjValue)>>,
 ) -> Result<ExtrinsicData> {
-	// decode_value(&mut value.0.as_slice(), &this.reg, this.ty.0, false).map(Val::from)
 	let encoding = guess_extrinsic_encoding(&this.meta)?;
 
 	let data = value.0;
 	let mut cursor = data.as_slice();
 
 	let length =
-		<Compact<u32>>::decode(&mut cursor).map_err(|e| runtime_error!("bad length: {e}"))?;
+		<Compact<u32>>::decode_ext(&mut cursor).map_err(|e| runtime_error!("bad length: {e}"))?;
 	ensure!(cursor.len() == length.0 as usize, "length mismatch");
 
-	let version = u8::decode(&mut cursor).map_err(|e| runtime_error!("bad ver: {e}"))?;
+	let version = u8::decode_ext(&mut cursor).map_err(|e| runtime_error!("bad ver: {e}"))?;
 
 	let is_signed = version & 0b10000000 != 0;
 	let version = version & 0b01111111;
@@ -1456,12 +1555,20 @@ fn chain_block(this: &chain_block, block: u32) -> Result<ObjValue> {
 }
 
 /// Selection of optional flags for chain data processing.
-#[derive(Typed, Trace, Default, Clone, Copy)]
-struct ChainOpts {
+#[derive(Typed, Trace, Default, Clone, Copy, Debug)]
+pub struct ChainOpts {
 	/// Whether or not to ignore trie prefixes with no keys
-	omit_empty: bool,
+	pub omit_empty: bool,
 	/// Should default values be included in output
-	include_defaults: bool,
+	pub include_defaults: bool,
+	/// Should use default values if storage decoding fails
+	pub use_default_for_corrupted_storages: Option<bool>,
+}
+
+impl ChainOpts {
+	fn use_default_for_corrupted_storages(&self) -> bool {
+		self.use_default_for_corrupted_storages.unwrap_or(false)
+	}
 }
 
 /// Get chain data from a URL, including queryable storage, metadata, and blocks.
@@ -1473,9 +1580,11 @@ struct ChainOpts {
 /// ```text
 /// cql.chain("ws://localhost:9944")
 /// ```
-#[builtin]
-fn builtin_chain(url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
-	let opts = opts.unwrap_or_default();
+#[builtin(fields(
+    default_opts: ChainOpts,
+))]
+fn builtin_chain(this: &builtin_chain, url: String, opts: Option<ChainOpts>) -> Result<ObjValue> {
+	let opts = opts.unwrap_or(this.default_opts);
 	let client = ClientShared::new(url).map_err(client::Error::Live)?;
 	let mut obj = ObjValueBuilder::new();
 	obj.method(
@@ -1519,13 +1628,16 @@ fn builtin_keccak256(data: Hex) -> Hex {
 ///     "c": 3,
 /// }, {omit_empty:true})
 /// ```
-#[builtin]
+#[builtin(fields(
+    default_opts: ChainOpts,
+))]
 fn builtin_dump(
+	this: &builtin_dump,
 	meta: Either![ObjValue, Hex],
 	data: BTreeMap<Hex, Hex>,
 	opts: Option<ChainOpts>,
 ) -> Result<ObjValue> {
-	let opts = opts.unwrap_or_default();
+	let opts = opts.unwrap_or(this.default_opts);
 
 	fn types_ordered(r: &PortableRegistry) -> bool {
 		for (i, t) in r.types.iter().enumerate() {
@@ -1542,7 +1654,7 @@ fn builtin_dump(
 		)
 		.map_err(|e| runtime_error!("bad metadata: {e}"))?,
 		Either2::B(meta) => {
-			match RuntimeMetadataPrefixed::decode(&mut meta.0.as_slice())
+			match RuntimeMetadataPrefixed::decode_ext(&mut meta.0.as_slice())
 				.map_err(|e| runtime_error!("bad metadata: {e}"))?
 				.1
 			{
@@ -1571,6 +1683,7 @@ fn builtin_dump(
 
 #[builtin(fields(
 	cache_path: Option<PathBuf>,
+    default_opts: ChainOpts,
 ))]
 fn builtin_full_dump(
 	this: &builtin_full_dump,
@@ -1582,7 +1695,14 @@ fn builtin_full_dump(
 	};
 	let runtime = RuntimeContainer::new(code.0.clone(), this.cache_path.as_deref());
 	let meta = runtime.metadata()?;
-	builtin_dump(Either2::B(Hex(meta)), data, opts)
+	builtin_dump(
+		&builtin_dump {
+			default_opts: this.default_opts,
+		},
+		Either2::B(Hex(meta)),
+		data,
+		opts,
+	)
 }
 
 #[builtin]
@@ -1599,11 +1719,11 @@ fn builtin_blake2_256_root(tree: BTreeMap<Hex, Hex>, state_version: u8) -> Resul
 	Ok(Hex(blake2_256_root(pairs, state_version).as_bytes().into()))
 }
 
-pub fn create_cql(wasm_cache_path: Option<PathBuf>) -> ObjValue {
+pub fn create_cql(wasm_cache_path: Option<PathBuf>, default_opts: ChainOpts) -> ObjValue {
 	// Pass the built-in functions as macro-generated structs into the cql object available from Jsonnet code.
 	let mut cql = ObjValueBuilder::new();
-	cql.method("chain", builtin_chain::INST);
-	cql.method("dump", builtin_dump::INST);
+	cql.method("chain", builtin_chain { default_opts });
+	cql.method("dump", builtin_dump { default_opts });
 
 	cql.method("toHex", builtin_to_hex::INST);
 	cql.method("fromHex", builtin_from_hex::INST);
@@ -1634,6 +1754,7 @@ pub fn create_cql(wasm_cache_path: Option<PathBuf>) -> ObjValue {
 		"fullDump",
 		builtin_full_dump {
 			cache_path: wasm_cache_path.clone(),
+			default_opts,
 		},
 	);
 	cql.method(
@@ -1652,16 +1773,24 @@ pub fn create_cql(wasm_cache_path: Option<PathBuf>) -> ObjValue {
 pub struct CqlContextInitializer {
 	cql: Thunk<Val>,
 }
+impl CqlContextInitializer {
+	pub fn new(wasm_cache_path: Option<PathBuf>, opts: Option<ChainOpts>) -> Self {
+		let wasm_cache_path = wasm_cache_path.or_else(|| {
+			BaseDirs::new().map(|b| {
+				let mut d = b.cache_dir().to_owned();
+				d.push("chainql");
+				d
+			})
+		});
+		let opts = opts.unwrap_or_default();
+		Self {
+			cql: Thunk::evaluated(Val::Obj(create_cql(wasm_cache_path, opts))),
+		}
+	}
+}
 impl Default for CqlContextInitializer {
 	fn default() -> Self {
-		let wasm_cache_dir = BaseDirs::new().map(|b| {
-			let mut d = b.cache_dir().to_owned();
-			d.push("chainql");
-			d
-		});
-		Self {
-			cql: Thunk::evaluated(Val::Obj(create_cql(wasm_cache_dir))),
-		}
+		Self::new(None, None)
 	}
 }
 
