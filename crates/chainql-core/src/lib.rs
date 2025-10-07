@@ -6,46 +6,47 @@ use std::{
 	str::FromStr,
 };
 
-use client::{Client, ClientT, dump::ClientDump, live::ClientShared};
+use client::{dump::ClientDump, live::ClientShared, Client, ClientT};
 use directories::BaseDirs;
 use frame_metadata::{
 	PalletMetadata, RuntimeMetadata, RuntimeMetadataPrefixed, RuntimeMetadataV14,
 	StorageEntryModifier, StorageEntryType, StorageHasher,
 };
-use hex::{Hex, builtin_from_hex, builtin_to_hex};
+use hex::{builtin_from_hex, builtin_to_hex, Hex};
 use jrsonnet_evaluator::{
-	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, Thunk, Val,
 	bail,
 	error::{Error as JrError, Result},
 	function::builtin,
 	in_description_frame, runtime_error,
 	typed::{Either2, NativeFn, Typed},
 	val::{ArrValue, NumValue, ThunkValue},
+	ContextInitializer, Either, IStr, ObjValue, ObjValueBuilder, Pending, ResultExt, Thunk, Val,
 };
 use jrsonnet_gcmodule::Trace;
 use num_bigint::BigInt;
 use parity_scale_codec::{Compact, Encode, Input, Output};
 use rebuild::rebuild;
 use scale_info::{
-	Field, PortableRegistry, TypeDef, TypeDefPrimitive, form::PortableForm,
-	interner::UntrackedSymbol,
+	form::PortableForm, interner::UntrackedSymbol, Field, PortableRegistry, TypeDef,
+	TypeDefPrimitive,
 };
 use serde::Deserialize;
 use sp_core::{
-	ByteArray, U256, blake2_128, blake2_256, crypto::Ss58Codec, storage::StateVersion, twox_64,
-	twox_128, twox_256,
+	blake2_128, blake2_256, crypto::Ss58Codec, storage::StateVersion, twox_128, twox_256, twox_64,
+	ByteArray, U256,
 };
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
+use tracing::{info, warn};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
-use tracing::info;
 
-use crate::address::{AddressSchema, AddressType, Ss58Format, verify_signature};
+use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
 
 use self::{
 	address::{
-		SignatureType, builtin_address_seed, builtin_ecdsa_address_seed, builtin_ecdsa_seed,
+		builtin_address_seed, builtin_ecdsa_address_seed, builtin_ecdsa_seed,
 		builtin_ed25519_address_seed, builtin_ed25519_seed, builtin_ethereum_address_seed,
 		builtin_ethereum_seed, builtin_seed, builtin_sr25519_address_seed, builtin_sr25519_seed,
+		SignatureType,
 	},
 	ethereum::builtin_eth_encode,
 };
@@ -188,15 +189,10 @@ where
 	}
 	let mut out = ObjValueBuilder::new();
 	for (i, f) in typ.iter().enumerate() {
-		let field = decode_value(dec, reg, f.ty, compact).map_err(|err| {
-			runtime_error!(
-				"broken field {}: {}",
-				f.name.clone().unwrap_or_else(|| i.to_string()),
-				err
-			)
-		})?;
-		out.field(f.name.clone().unwrap_or_else(|| format!("unnamed{i}")))
-			.try_value(field)?;
+		let field_name = f.name.clone().unwrap_or_else(|| format!("unnamed{i}"));
+		let field = decode_value(dec, reg, f.ty, compact)
+			.with_description(|| format!("field <{field_name}> decode"))?;
+		out.field(field_name).try_value(field)?;
 	}
 	Ok(Val::Obj(out.build()))
 }
@@ -487,7 +483,7 @@ where
 	if let Err(err) = &value
 		&& use_default_for_corrupted_storages
 	{
-		tracing::warn!("Storage {name} is corrupted. Default values ​​will be used. Error: {err}");
+		warn!("Storage {name} is corrupted. Default values will be used. Error: {err}");
 
 		value = if let Some(default) = default {
 			decode_value(&mut default.as_ref(), reg, typ, compact)
@@ -523,10 +519,8 @@ where
 							return Ok(Val::string(var.name.as_str()));
 						}
 						let mut obj = ObjValueBuilder::new();
-						let val =
-							decode_obj_value(dec, reg, &var.fields, compact).map_err(|err| {
-								runtime_error!("failed to decode {} variant: {}", var.name, err)
-							})?;
+						let val = decode_obj_value(dec, reg, &var.fields, compact)
+							.with_description(|| format!("variant <{}> decode", var.name))?;
 						obj.field(var.name.as_str()).try_value(val)?;
 
 						return Ok(Val::Obj(obj.build()));
@@ -717,7 +711,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 			&c.name,
 			c.shared.value_typ,
 			c.shared.value_default.clone(),
-			c.shared.opts.use_default_for_corrupted_storages,
+			c.shared.opts.use_default_for_corrupted_storages(),
 		);
 	};
 	let hash_bytes = match key.0 {
@@ -757,7 +751,7 @@ fn make_fetched_keys_storage(c: MapFetcherContext) -> Result<Val> {
 				key_ty,
 				false,
 				c.shared.value_default.clone(),
-				c.shared.opts.use_default_for_corrupted_storages,
+				c.shared.opts.use_default_for_corrupted_storages(),
 			)?
 		};
 		// dbg!(&value);
@@ -930,7 +924,7 @@ fn make_pallet_key(
 					let typ: UntrackedSymbol<TypeId> = v;
 					let default: Option<Vec<u8>> = default;
 					let registry: Rc<PortableRegistry> = registry.clone();
-					let use_default_for_corrupted_storages: bool = opts.use_default_for_corrupted_storages;
+					let use_default_for_corrupted_storages: bool = opts.use_default_for_corrupted_storages();
 					Thunk::<Val>::evaluated(fetch_decode_key(
 						entry_key.as_slice(),
 						client,
@@ -1567,8 +1561,14 @@ pub struct ChainOpts {
 	pub omit_empty: bool,
 	/// Should default values be included in output
 	pub include_defaults: bool,
-	/// TODO
-	pub use_default_for_corrupted_storages: bool,
+	/// Should use default values if storage decoding fails
+	pub use_default_for_corrupted_storages: Option<bool>,
+}
+
+impl ChainOpts {
+	fn use_default_for_corrupted_storages(&self) -> bool {
+		self.use_default_for_corrupted_storages.unwrap_or(false)
+	}
 }
 
 /// Get chain data from a URL, including queryable storage, metadata, and blocks.

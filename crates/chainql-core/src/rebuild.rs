@@ -4,9 +4,10 @@ use frame_metadata::{
 	PalletStorageMetadata, RuntimeMetadataV14, StorageEntryMetadata, StorageEntryType,
 	StorageHasher,
 };
-use jrsonnet_evaluator::{bail, runtime_error, typed::Typed, ObjValue, Result, ResultExt, Val};
-use scale_info::{form::PortableForm, interner::UntrackedSymbol, PortableRegistry};
+use jrsonnet_evaluator::{ObjValue, Result, ResultExt, Val, bail, typed::Typed};
+use scale_info::{PortableRegistry, form::PortableForm, interner::UntrackedSymbol};
 use sp_core::twox_128;
+use tracing::info;
 
 use crate::{encode_single_key, encode_value, hex::Hex, normalize_storage_map_keys};
 
@@ -74,7 +75,7 @@ fn rebuild_inner(
 		let data = ObjValue::from_untyped(data)?;
 		handled_prefixes.push(pallet_prefix);
 		out.push_prefix(&pallet_prefix);
-		tracing::info!("rebuilding pallet {}", storage.prefix);
+		info!("rebuilding pallet {}", storage.prefix);
 		rebuild_pallet(data, out, &meta.types, storage)
 			.with_description(|| format!("pallet <{key}> rebuild"))?;
 		out.pop_prefix()
@@ -106,16 +107,7 @@ fn rebuild_pallet(
 		};
 		let storage_prefix = twox_128(entry.name.as_bytes());
 
-		let data = match data {
-			Ok(data) => data,
-			Err(err) => {
-				return Err(runtime_error!(
-					"failed to rebuild storage {key}: {}",
-					// remove a lot of nested "runtime error" messages
-					err.to_string().replace("runtime error: ", "")
-				));
-			}
-		};
+		let data = data.with_description(|| format!("storage entry <{key}> decode"))?;
 
 		handled_prefixes.push(storage_prefix);
 		out.push_prefix(&storage_prefix);
@@ -147,7 +139,7 @@ fn rebuild_storage_entry(
 			key,
 			value,
 		} => {
-			tracing::info!("rebuilding storage {}", meta.name);
+			info!("rebuilding storage {}", meta.name);
 			let keys = normalize_storage_map_keys(reg, *key, hashers)?;
 			rebuild_storage(data, out, reg, &keys, *value, 0)
 		}
