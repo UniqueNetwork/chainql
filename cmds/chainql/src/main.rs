@@ -10,9 +10,10 @@ use tracing_subscriber::{
 };
 use tracing::Level;
 
-#[derive(ValueEnum, Clone, Copy)]
+#[derive(Clone, Copy, Default, ValueEnum)]
 enum CorruptedStorageStrategy {
 	/// Return error when storage decoding fails.
+	#[default]
 	RaiseError,
 
 	/// Use default values from metadata
@@ -29,7 +30,7 @@ struct Options {
 	/// Please contact the developer to fix the storage.
 	///
 	/// There's no guarantee that the chain will start and function correctly with corrupted data.
-	#[arg(long, default_value = "raise-error")]
+	#[arg(long, value_enum, default_value_t)]
 	corrupted_storage_strategy: CorruptedStorageStrategy,
 }
 
