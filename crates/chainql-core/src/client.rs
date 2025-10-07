@@ -4,6 +4,10 @@ use frame_metadata::RuntimeMetadataV14;
 use jrsonnet_evaluator::runtime_error;
 use jrsonnet_gcmodule::Trace;
 
+mod rpc;
+mod rpc_http;
+mod rpc_ws;
+
 pub mod dump;
 pub mod live;
 
@@ -42,7 +46,6 @@ pub trait ClientT {
 	fn contains_key(&self, key: &[u8]) -> Result<bool> {
 		Ok(self.get_storage(key)?.is_some())
 	}
-	fn next(&self) -> Result<Client>;
 }
 
 #[derive(Clone, Trace)]
@@ -71,9 +74,5 @@ impl ClientT for Client {
 
 	fn contains_data_for(&self, prefix: &[u8]) -> Result<bool> {
 		self.0.contains_data_for(prefix)
-	}
-
-	fn next(&self) -> Result<Client> {
-		self.0.next()
 	}
 }

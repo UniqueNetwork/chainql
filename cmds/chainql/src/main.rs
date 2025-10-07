@@ -4,6 +4,11 @@ use clap::Parser;
 use jrsonnet_cli::{InputOpts, MiscOpts, StdOpts, TlaOpts, TraceOpts};
 use jrsonnet_evaluator::{apply_tla, bail, error::Result, manifest::JsonFormat, State};
 use tokio::runtime::Handle;
+use tracing_indicatif::{filter::{hide_indicatif_span_fields, IndicatifFilter}, IndicatifLayer};
+use tracing_subscriber::{
+	fmt::{format::DefaultFields, writer::MakeWriterExt}, layer::SubscriberExt, util::SubscriberInitExt, Layer,
+};
+use tracing::Level;
 
 /// chainql
 #[derive(Parser)]
@@ -23,6 +28,20 @@ struct Opts {
 }
 /// Set up Jrsonnet.
 fn main_jrsonnet(opts: Opts) -> Result<String> {
+	let indicatif_layer = IndicatifLayer::new()
+		.with_span_field_formatter(hide_indicatif_span_fields(DefaultFields::new()));
+
+	tracing_subscriber::registry()
+		.with(
+			tracing_subscriber::fmt::layer().without_time().with_writer(
+				indicatif_layer
+					.get_stderr_writer()
+					.with_max_level(Level::INFO),
+			),
+		)
+		.with(indicatif_layer.with_filter(IndicatifFilter::new(false)))
+		.init();
+
 	let import_resolver = opts.misc.import_resolver();
 
 	let mut sb = State::builder();

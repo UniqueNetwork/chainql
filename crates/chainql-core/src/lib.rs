@@ -31,6 +31,7 @@ use sp_core::{
 };
 use sp_io::{hashing::keccak_256, trie::blake2_256_root};
 use wasm::{builtin_runtime_wasm, RuntimeContainer};
+use tracing::info;
 
 use crate::address::{verify_signature, AddressSchema, AddressType, Ss58Format};
 
@@ -952,7 +953,7 @@ fn make_unknown_key(client: Client, prefix: &[u8], known: &[&Vec<u8>]) -> Result
 		let client: Client = client;
 		let fetched: Vec<Vec<u8>> = fetched;
 		Thunk::<Val>::evaluated({
-			eprintln!("preloading all storage keys");
+			info!("preloading all storage keys");
 			client.preload_storage(&fetched.iter().collect::<Vec<_>>())?;
 			Val::Obj(pending_out.unwrap())
 		})
@@ -1424,7 +1425,7 @@ fn make_block(client: Client, opts: ChainOpts) -> Result<ObjValue> {
 		let pending_out: Pending<ObjValue> = pending_out.clone();
 		let client: Client = client.clone();
 		Thunk::<Val>::evaluated({
-			eprintln!("preloading all keys");
+			info!("preloading all keys");
 			let keys = client.get_keys(&[])?;
 			client.preload_storage(keys.iter().collect::<Vec<_>>().as_slice())?;
 			Val::Obj(pending_out.unwrap())

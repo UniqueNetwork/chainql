@@ -1,29 +1,38 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::env;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::time::Duration;
 use std::vec::Vec;
-use std::{cell::RefCell, rc::Rc, result};
+use std::{rc::Rc, result};
 
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataV14};
 use futures::{FutureExt, StreamExt, TryStreamExt as _};
 use jrsonnet_evaluator::bail;
 use jrsonnet_gcmodule::Trace;
-use jsonrpsee::core::ClientError;
-use jsonrpsee::{proc_macros::rpc, ws_client::WsClient};
 use parity_scale_codec::Decode;
-use serde::Deserialize;
 use thiserror::Error;
 use tokio::runtime::Handle;
+use tracing::{debug, error, info, info_span, Span};
+use tracing_indicatif::span_ext::IndicatifSpanExt;
+use tracing_indicatif::style::ProgressStyle;
+use url::Url;
+
+use crate::client::rpc::{RpcClient, RpcError};
+use crate::client::rpc_http::HttpClient;
+use crate::client::rpc_ws::WsClient;
 
 use super::ClientT;
 
 #[derive(Error, Debug)]
 pub enum Error {
+	#[error("url error: {0}")]
+	UrlParse(#[from] url::ParseError),
+	#[error("unsupported url scheme: {0}")]
+	UnsupportedUrlScheme(String),
 	#[error("rpc error: {0}")]
-	Rpc(#[from] ClientError),
+	Rpc(#[from] RpcError),
 	#[error("unsupported metadata version, only v14 is supported")]
 	UnsupportedMetadataVersion,
 	#[error("something is broken, keys paged chunk size has reached zero")]
@@ -32,94 +41,53 @@ pub enum Error {
 	BlockNotFound(Option<u32>),
 	#[error("block history is not supported")]
 	BlockHistoryNotSupported,
-	#[error("url: {0}")]
-	UrlParse(#[from] http::uri::InvalidUri),
-}
-type Result<T, E = Error> = result::Result<T, E>;
-
-#[derive(Deserialize)]
-pub struct QueryStorageResult {
-	changes: Vec<(String, Option<String>)>,
 }
 
-#[rpc(client)]
-pub trait SubstrateRpc {
-	#[method(name = "state_getMetadata")]
-	fn get_metadata(&self, at: Option<String>) -> RpcResult<String>;
-	#[method(name = "state_getStorage")]
-	fn get_storage(&self, key: String, at: Option<String>) -> RpcResult<Option<String>>;
-	#[method(name = "state_queryStorageAt")]
-	fn query_storage(
-		&self,
-		keys: Vec<String>,
-		at: Option<String>,
-	) -> RpcResult<Vec<QueryStorageResult>>;
-	#[method(name = "state_getKeys")]
-	fn get_keys(&self, key: String, at: Option<String>) -> RpcResult<Vec<String>>;
-	#[method(name = "state_getKeysPaged")]
-	fn get_keys_paged(
-		&self,
-		key: String,
-		count: usize,
-		start_key: Option<String>,
-		at: Option<String>,
-	) -> RpcResult<Vec<String>>;
-
-	#[method(name = "chain_getBlockHash")]
-	fn get_block_hash(&self, num: Option<u32>) -> RpcResult<Option<String>>;
-}
+pub type Result<T, E = Error> = result::Result<T, E>;
 
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
-	real: Rc<WsClient>,
+	rpc_client: Rc<Box<dyn RpcClient>>,
 }
 
 impl ClientShared {
 	pub fn new(url: impl AsRef<str>) -> Result<Self> {
-		let handle = Handle::current();
-		let uri: hyper::Uri = url.as_ref().parse()?;
-		let mut uri = uri.into_parts();
-		let ws_scheme = http::uri::Scheme::try_from("ws").expect("valid");
-		let wss_scheme = http::uri::Scheme::try_from("wss").expect("valid");
-		if uri.scheme == Some(ws_scheme.clone()) || uri.scheme == Some(wss_scheme) {
-			if let Some(authority) = &mut uri.authority {
-				if authority.port().is_none() {
-					*authority = http::uri::Authority::try_from(format!(
-						"{authority}:{}",
-						if uri.scheme == Some(ws_scheme) {
-							9944
-						} else {
-							443
-						}
-					))
-					.expect("valid");
-				}
-			};
-		}
-		let uri = hyper::Uri::from_parts(uri).expect("valid reconstruction");
-		let client = handle.block_on(
-			jsonrpsee::ws_client::WsClientBuilder::default()
-				.request_timeout(Duration::from_secs(300))
-				.max_request_size(256 * 1024 * 1024)
-				.max_response_size(1024 * 1024 * 1024)
-				.build(uri.to_string()),
-		)?;
+		let url: Url = url.as_ref().parse()?;
+		let timeout: Duration = Duration::from_secs(300);
+
+		let client: Box<dyn RpcClient> = match url.scheme() {
+			"http" | "https" => {
+				let client = HttpClient::new(url, timeout)?;
+				Box::new(client)
+			}
+			"ws" | "wss" => {
+				let handle = Handle::current();
+				let client = handle.block_on(WsClient::new(url, timeout))?;
+				Box::new(client)
+			}
+			scheme => {
+				return Err(Error::UnsupportedUrlScheme(scheme.to_owned()));
+			}
+		};
+
 		Ok(Self {
-			real: Rc::new(client),
+			rpc_client: Rc::new(client),
 		})
 	}
+
 	pub fn block(&self, num: Option<u32>) -> Result<LiveClient> {
 		let handle = Handle::current();
+
 		let block = handle
-			.block_on(self.real.get_block_hash(num))?
+			.block_on(self.rpc_client.get_block_hash(num))?
 			.ok_or(Error::BlockNotFound(num))?;
 
 		let max_workers = get_var("CHAINQL_WORKERS", 16);
-		let keys_chunk_size = get_var("CHAINQL_KEYS_CHUNK_SIZE", 60_000);
+		let keys_chunk_size = get_var("CHAINQL_KEYS_CHUNK_SIZE", 30_000);
 
 		Ok(LiveClient {
-			real: self.real.clone(),
+			real: self.rpc_client.clone(),
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
 			block: Rc::new(block),
@@ -127,7 +95,7 @@ impl ClientShared {
 			max_workers,
 			keys_chunk_size,
 
-			learned_max_chunk_size: Cell::new(8000),
+			learned_max_chunk_size: Cell::new(keys_chunk_size),
 		})
 	}
 }
@@ -141,9 +109,9 @@ where
 		Ok(value) => value,
 		Err(env::VarError::NotPresent) => {
 			return default;
-		},
+		}
 		Err(env::VarError::NotUnicode(err)) => {
-			eprintln!("Invalid env var '{var}' value: {err:?}");
+			error!("invalid env var '{var}' value: {err:?}");
 			std::process::exit(1);
 		}
 	};
@@ -151,7 +119,7 @@ where
 	match value.parse::<T>() {
 		Ok(parsed) => parsed,
 		Err(err) => {
-			eprintln!("Invalid env var '{var}' value '{value}': {err}");
+			error!("invalid env var '{var}' value '{value}': {err}");
 			std::process::exit(1);
 		}
 	}
@@ -170,7 +138,7 @@ peg::parser!(
 #[derive(Clone, Trace)]
 pub struct LiveClient {
 	#[trace(skip)]
-	real: Rc<WsClient>,
+	real: Rc<Box<dyn RpcClient>>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
@@ -205,6 +173,7 @@ impl LiveClient {
 			handle.block_on(self.get_keys_naive(prefix))
 		}
 	}
+
 	pub async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
@@ -222,29 +191,32 @@ impl LiveClient {
 				.map(|k| Key(k.to_vec()))
 				.collect());
 		}
-		eprintln!("loading keys by prefix {prefix_str}");
 
-		// let handle = Handle::current();
+		info!("loading keys by prefix {prefix_str}");
+
 		let mut fetched = vec![];
 
 		loop {
 			let chunk_result = self
 				.real
 				.get_keys_paged(
-					prefix_str.clone(),
+					&prefix_str,
 					self.learned_max_chunk_size.get(),
-					fetched.last().cloned(),
-					Some(self.block.as_str().to_owned()),
+					fetched.last(),
+					Some(self.block.as_ref()),
 				)
 				.await;
+
 			let chunk = match chunk_result {
 				Ok(v) => v,
-				Err(ClientError::Call(c)) if c.code() == 4002 => {
-					if let Ok(v) = text_error::count_exceeds_max(c.message()) {
-						eprintln!("server didn't like our paged keys limit, resetting to {v}");
+				Err(RpcError::Server { code, message }) if code == 4002 => {
+					if let Ok(v) = text_error::count_exceeds_max(&message) {
+						debug!(
+							"server didn't like our paged keys limit, resetting to {v}"
+						);
 						self.learned_max_chunk_size.set(v);
 					} else {
-						eprintln!("server didn't like our paged keys limit, and we can't extract its limit from {:?}, reducing in half", c.message());
+						debug!("server didn't like our paged keys limit, and we can't extract its limit from message '{message}', reducing in half");
 						self.learned_max_chunk_size
 							.set(self.learned_max_chunk_size.get() / 2);
 						if self.learned_max_chunk_size.get() == 0 {
@@ -259,12 +231,12 @@ impl LiveClient {
 			let has_more = chunk.len() == self.learned_max_chunk_size.get();
 			let len = chunk.len();
 			if len != 0 {
-				eprintln!("loaded {len} keys for pref {}", prefix_str);
+				info!("loaded {len} keys for pref {}", prefix_str);
 			}
 			fetched.extend(chunk);
 			if !has_more {
 				if !fetched.is_empty() {
-					eprintln!("loaded keys, last chunk was {len}");
+					info!("loaded keys, last chunk was {len}");
 				}
 				break;
 			}
@@ -281,13 +253,14 @@ impl LiveClient {
 			.collect::<Vec<Key>>();
 		Ok(fetched)
 	}
+
 	pub fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
 		let mut cache = self.key_value_cache.borrow_mut();
 		if cache.contains_key(key) {
 			return Ok(cache.get(key).expect("cached").clone());
 		}
 		let key_str = format!("0x{}", hex::encode(key));
-		eprintln!("loading key {key_str}");
+		info!("loading key {key_str}");
 
 		let handle = Handle::current();
 		let value = handle.block_on(
@@ -305,31 +278,48 @@ impl LiveClient {
 		cache.insert(key.to_vec(), value.clone());
 		Ok(value)
 	}
+
 	pub fn preload_storage(&self, keys: &[&Vec<u8>]) -> Result<()> {
+		let progress_span = info_span!("preload_storage", indicatif.pb_show = true);
+		progress_span.pb_set_style(&ProgressStyle::with_template("{msg} {wide_bar} {pos}/{len}").unwrap());
+		progress_span.pb_set_length(keys.len() as u64);
+		progress_span.pb_set_message("preloading keys");
+		progress_span.pb_set_finish_message("all keys preloaded");
+
+		let progress_span_guard = progress_span.enter();
+
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
 				keys.chunks(self.keys_chunk_size)
-					.map(|slice| self.preload_storage_fallback(slice)),
+					.map(|slice| self.preload_storage_fallback(progress_span.clone(), slice)),
 			)
 			.buffer_unordered(self.max_workers)
-			.try_collect::<()>(),
-		)
+			.try_collect::<()>()
+		)?;
+
+		drop(progress_span_guard);
+		drop(progress_span);
+
+		info!("preloaded {} keys", keys.len());
+
+		Ok(())
 	}
-	async fn preload_storage_fallback(&self, keys: &[&Vec<u8>]) -> Result<()> {
+
+	async fn preload_storage_fallback(&self, progress_span: Span, keys: &[&Vec<u8>]) -> Result<()> {
 		let chunk_size = keys.len();
-		match self.preload_storage_naive(keys).await {
+		match self.preload_storage_naive(progress_span.clone(), keys).await {
 			Ok(()) => Ok(()),
-			Err(Error::Rpc(ClientError::Call(c))) if c.code() == -32702 || c.code() == -32008 => {
+			Err(Error::Rpc(RpcError::Server { code, .. })) if code == -32702 || code == -32008 => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
-				self.preload_storage_fallback(keysa).boxed_local().await?;
-				self.preload_storage_fallback(keysb).boxed_local().await?;
+				self.preload_storage_fallback(progress_span.clone(), keysa).boxed_local().await?;
+				self.preload_storage_fallback(progress_span.clone(), keysb).boxed_local().await?;
 				Ok(())
 			}
-			Err(e) => Err(e),
+			Err(err) => Err(err),
 		}
 	}
-	async fn preload_storage_naive(&self, keys: &[&Vec<u8>]) -> Result<()> {
+	async fn preload_storage_naive(&self, progress_span: Span, keys: &[&Vec<u8>]) -> Result<()> {
 		let mut list = Vec::new();
 		{
 			let cache = self.key_value_cache.borrow_mut();
@@ -342,12 +332,16 @@ impl LiveClient {
 			}
 			drop(cache);
 		}
-		eprintln!("preloading {} keys", list.len());
-		// let handle = Handle::current();
+
+		let chunk_size = keys.len() as u64;
+
 		let value = self
 			.real
-			.query_storage(list, Some(self.block.as_str().to_owned()))
+			.query_storage(list, Some(self.block.as_ref()))
 			.await?;
+
+		progress_span.pb_inc(chunk_size);
+
 		if value.is_empty() {
 			return Ok(());
 		}
@@ -370,9 +364,9 @@ impl LiveClient {
 		Ok(())
 	}
 	pub fn get_metadata(&self) -> Result<RuntimeMetadataV14> {
-		eprintln!("loading metadata");
+		info!("loading metadata");
 		let handle = Handle::current();
-		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_str().to_owned())))?;
+		let meta = handle.block_on(self.real.get_metadata(Some(self.block.as_ref())))?;
 		assert!(meta.starts_with("0x"));
 		let meta = hex::decode(&meta[2..]).expect("decode hex");
 		assert!(&meta[0..4] == b"meta");
@@ -406,15 +400,15 @@ impl LiveClient {
 			}
 			return Ok(false);
 		}
-		eprintln!("checking for keys under {prefix:0>2x?}");
+		info!("checking for keys under {prefix:0>2x?}");
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		let handle = Handle::current();
 		let chunk = handle.block_on(self.real.get_keys_paged(
-			prefix_str,
+			&prefix_str,
 			1,
 			None,
-			Some(self.block.as_str().to_owned()),
+			Some(self.block.as_ref()),
 		))?;
 		Ok(!chunk.is_empty())
 	}
@@ -439,9 +433,5 @@ impl ClientT for LiveClient {
 
 	fn contains_data_for(&self, prefix: &[u8]) -> super::Result<bool> {
 		Ok(self.contains_data_for(prefix)?)
-	}
-
-	fn next(&self) -> super::Result<super::Client> {
-		Err(Error::BlockHistoryNotSupported.into())
 	}
 }
