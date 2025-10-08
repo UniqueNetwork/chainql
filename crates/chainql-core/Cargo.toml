@@ -30,7 +30,7 @@ libsecp256k1 = "0.7.1"
 sp-runtime = "43.0.0"
 directories = "6.0.0"
 futures = "0.3.31"
-reqwest = { version = "0.12.23", features = ["json"] }
+reqwest = { default-features = false, version = "0.12.23", features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
 url = "2.5.7"
 tracing-indicatif = "0.3.13"
 jsonrpsee = { version = "0.26.0", features = ["macros", "ws-client"] }
