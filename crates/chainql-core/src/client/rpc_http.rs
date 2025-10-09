@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sp_runtime::DeserializeOwned;
 use std::sync::Mutex;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 
 use crate::client::rpc::{QueryStorageResult, Result, RpcClient, RpcError};
 
@@ -27,6 +27,9 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
+	const RATE_LIMITED_STATUSES: &[StatusCode] =
+		&[StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT];
+
 	pub fn new(url: reqwest::Url, timeout: Duration) -> Result<Self> {
 		Ok(Self {
 			client: reqwest::Client::builder().timeout(timeout).build()?,
@@ -35,11 +38,45 @@ impl HttpClient {
 		})
 	}
 
-	async fn call<P, T>(&self, method: &'static str, params: P) -> Result<T>
+	async fn call_non_none<P, T>(&self, method: &str, params: P) -> Result<T>
 	where
 		P: Serialize,
 		T: DeserializeOwned,
 	{
+		self.call(method, params)
+			.await?
+			.ok_or_else(|| RpcError::BadResponse("unexpected null from server".to_owned()))
+	}
+
+	async fn call<P, T>(&self, method: &str, params: P) -> Result<Option<T>>
+	where
+		P: Serialize,
+		T: DeserializeOwned,
+	{
+		let response = self.request(method, &params).await?;
+
+		if Self::RATE_LIMITED_STATUSES.contains(&response.status()) {
+			return Box::pin(self.call(method, params)).await;
+		}
+
+		self.status_to_error(&response)?;
+
+		let response_body = response.text().await?;
+
+		let deserialized = serde_json::from_str::<Response<T>>(&response_body)
+			.map_err(|err| RpcError::BadResponse(err.to_string()))?;
+
+		if let Some(e) = deserialized.error {
+			return Err(RpcError::Server {
+				code: e.code,
+				message: e.message,
+			});
+		}
+
+		return Ok(deserialized.result);
+	}
+
+	async fn request(&self, method: &str, params: &impl Serialize) -> Result<reqwest::Response> {
 		let mut rate_limiter_guard = self.rate_limiter.request_pending().await;
 
 		let body = serde_json::json!({
@@ -56,42 +93,23 @@ impl HttpClient {
 			.send()
 			.await?;
 
-		if [StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT].contains(&response.status())
-		{
-			drop(rate_limiter_guard);
-			return Box::pin(self.call(method, params)).await;
+		if !Self::RATE_LIMITED_STATUSES.contains(&response.status()) {
+			rate_limiter_guard.succeeded();
 		}
 
-		rate_limiter_guard.succeeded();
+		Ok(response)
+	}
 
-		if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
-			return Err(RpcError::Server {
+	fn status_to_error(&self, response: &reqwest::Response) -> Result<()> {
+		match response.status() {
+			StatusCode::OK => Ok(()),
+			StatusCode::PAYLOAD_TOO_LARGE => Err(RpcError::Server {
 				code: 4002,
 				message: "request limit exceeded at http level (status code 413)".to_owned(),
-			});
-		} else if response.status() != StatusCode::OK {
-			return Err(RpcError::BadResponse(format!(
-				"unexpected status code {}",
-				response.status()
-			)));
-		}
-
-		let response_body = response.text().await?;
-
-		let deserialized = serde_json::from_str::<Response<T>>(&response_body)
-			.map_err(|err| RpcError::BadResponse(err.to_string()))?;
-
-		if let Some(result) = deserialized.result {
-			Ok(result)
-		} else if let Some(e) = deserialized.error {
-			Err(RpcError::Server {
-				code: e.code,
-				message: e.message,
-			})
-		} else {
-			Err(RpcError::BadResponse(format!(
-				"no error or result in json '{response_body}'"
-			)))
+			}),
+			other => Err(RpcError::BadResponse(format!(
+				"unexpected status code {other}",
+			))),
 		}
 	}
 }
@@ -109,7 +127,7 @@ impl RpcClient for HttpClient {
 		start_key: Option<&String>,
 		at: Option<&String>,
 	) -> Result<Vec<String>> {
-		self.call("state_getKeysPaged", json!([key, count, start_key, at]))
+		self.call_non_none("state_getKeysPaged", json!([key, count, start_key, at]))
 			.await
 	}
 
@@ -122,9 +140,9 @@ impl RpcClient for HttpClient {
 		keys: Vec<String>,
 		at: Option<&String>,
 	) -> Result<Vec<QueryStorageResult>> {
-		self.call(
+		self.call_non_none(
 			"state_queryStorageAt",
-			&json!({
+			json!({
 				"keys": keys,
 				"at": at
 			}),
@@ -133,7 +151,7 @@ impl RpcClient for HttpClient {
 	}
 
 	async fn get_metadata(&self, at: Option<&String>) -> Result<String> {
-		self.call("state_getMetadata", json!([at])).await
+		self.call_non_none("state_getMetadata", json!([at])).await
 	}
 }
 
