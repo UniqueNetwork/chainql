@@ -695,7 +695,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chainql"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "chainql-core",
  "clap",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-core"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "async-trait",
  "chainql-frame-metadata",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "chainql-frame-metadata"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "cfg-if",
  "parity-scale-codec",
