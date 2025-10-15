@@ -310,7 +310,7 @@ impl LiveClient {
 		let chunk_size = keys.len();
 		match self.preload_storage_naive(progress_span.clone(), keys).await {
 			Ok(()) => Ok(()),
-			Err(Error::Rpc(RpcError::Server { code, .. })) if code == -32702 || code == -32008 => {
+			Err(Error::Rpc(RpcError::Server { code, .. })) if [-32702, -32008, 4002].contains(&code) => {
 				let (keysa, keysb) = keys.split_at(chunk_size / 2);
 				self.preload_storage_fallback(progress_span.clone(), keysa).boxed_local().await?;
 				self.preload_storage_fallback(progress_span.clone(), keysb).boxed_local().await?;
