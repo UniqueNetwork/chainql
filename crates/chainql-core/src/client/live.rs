@@ -83,19 +83,15 @@ impl ClientShared {
 			.block_on(self.rpc_client.get_block_hash(num))?
 			.ok_or(Error::BlockNotFound(num))?;
 
-		let max_workers = get_var("CHAINQL_WORKERS", 16);
-		let keys_chunk_size = get_var("CHAINQL_KEYS_CHUNK_SIZE", 30_000);
+		let config = LiveClientConfig::from_env();
 
 		Ok(LiveClient {
 			real: self.rpc_client.clone(),
 			key_value_cache: Rc::new(RefCell::new(BTreeMap::new())),
 			fetched_prefixes: Rc::new(RefCell::new(Vec::new())),
 			block: Rc::new(block),
-
-			max_workers,
-			keys_chunk_size,
-
-			learned_max_chunk_size: Cell::new(keys_chunk_size),
+			config,
+			learned_max_chunk_size: Cell::new(config.keys_chunk_size),
 		})
 	}
 }
@@ -145,11 +141,24 @@ pub struct LiveClient {
 	fetched_prefixes: Rc<RefCell<Vec<Vec<u8>>>>,
 	#[trace(skip)]
 	block: Rc<String>,
+	#[trace(skip)]
+	config: LiveClientConfig,
+	learned_max_chunk_size: Cell<usize>,
+}
 
+#[derive(Clone, Copy)]
+struct LiveClientConfig {
 	max_workers: usize,
 	keys_chunk_size: usize,
+}
 
-	learned_max_chunk_size: Cell<usize>,
+impl LiveClientConfig {
+	fn from_env() -> Self {
+		Self {
+			max_workers: get_var("CHAINQL_WORKERS", 16),
+			keys_chunk_size: get_var("CHAINQL_KEYS_CHUNK_SIZE", 30_000),
+		}
+	}
 }
 
 #[derive(Default)]
@@ -168,7 +177,7 @@ impl LiveClient {
 			info!("loading keys by prefixes from 0x00 to 0xff");
 			handle.block_on(
 				futures::stream::iter(futures)
-					.buffer_unordered(self.max_workers)
+					.buffer_unordered(self.config.max_workers)
 					.try_concat(),
 			)
 		} else {
@@ -300,10 +309,10 @@ impl LiveClient {
 		let handle = Handle::current();
 		handle.block_on(
 			futures::stream::iter(
-				keys.chunks(self.keys_chunk_size)
+				keys.chunks(self.config.keys_chunk_size)
 					.map(|slice| self.preload_storage_fallback(progress_span.clone(), slice)),
 			)
-			.buffer_unordered(self.max_workers)
+			.buffer_unordered(self.config.max_workers)
 			.try_collect::<()>()
 		)?;
 
