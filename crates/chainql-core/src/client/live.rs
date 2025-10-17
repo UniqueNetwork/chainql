@@ -164,17 +164,22 @@ impl LiveClient {
 			for p in &prefixes {
 				futures.push(self.get_keys_naive(std::slice::from_ref(p)));
 			}
+
+			info!("loading keys by prefixes from 0x00 to 0xff");
 			handle.block_on(
 				futures::stream::iter(futures)
 					.buffer_unordered(self.max_workers)
 					.try_concat(),
 			)
 		} else {
+			info!("loading keys by prefix 0x{}", hex::encode(prefix));
 			handle.block_on(self.get_keys_naive(prefix))
 		}
 	}
 
-	pub async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
+	async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
+		const LOG_THRESHOLD: usize = 30_000;
+
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		if self
@@ -192,9 +197,8 @@ impl LiveClient {
 				.collect());
 		}
 
-		info!("loading keys by prefix {prefix_str}");
-
 		let mut fetched = vec![];
+		let mut previous_loaded: usize = 0;
 
 		loop {
 			let chunk_result = self
@@ -229,14 +233,19 @@ impl LiveClient {
 			};
 
 			let has_more = chunk.len() == self.learned_max_chunk_size.get();
-			let len = chunk.len();
-			if len != 0 {
-				info!("loaded {len} keys for pref {}", prefix_str);
-			}
+
 			fetched.extend(chunk);
+
+			let len = fetched.len();
+
+			if len - previous_loaded >= LOG_THRESHOLD {
+				info!("loaded +{} keys for pref {}, {} keys in total", len - previous_loaded, prefix_str, len);
+				previous_loaded = len;
+			}
+
 			if !has_more {
 				if !fetched.is_empty() {
-					info!("loaded keys, last chunk was {len}");
+					info!("successfully loaded all {len} keys for pref {prefix_str}");
 				}
 				break;
 			}
