@@ -150,6 +150,7 @@ pub struct LiveClient {
 struct LiveClientConfig {
 	max_workers: usize,
 	keys_chunk_size: usize,
+	get_keys_log_threshold: usize,
 }
 
 impl LiveClientConfig {
@@ -157,6 +158,7 @@ impl LiveClientConfig {
 		Self {
 			max_workers: get_var("CHAINQL_WORKERS", 16),
 			keys_chunk_size: get_var("CHAINQL_KEYS_CHUNK_SIZE", 30_000),
+			get_keys_log_threshold: get_var("CHAINQL_GET_KEYS_LOG_THRESHOLD", 50_000),
 		}
 	}
 }
@@ -187,8 +189,6 @@ impl LiveClient {
 	}
 
 	async fn get_keys_naive(&self, prefix: &[u8]) -> Result<Vec<Key>> {
-		const LOG_THRESHOLD: usize = 30_000;
-
 		let prefix_str = format!("0x{}", hex::encode(prefix));
 
 		if self
@@ -247,9 +247,11 @@ impl LiveClient {
 
 			let len = fetched.len();
 
-			if len - previous_loaded >= LOG_THRESHOLD {
-				info!("loaded +{} keys for pref {}, {} keys in total", len - previous_loaded, prefix_str, len);
-				previous_loaded = len;
+			if self.config.get_keys_log_threshold != 0 {
+				if len - previous_loaded >= self.config.get_keys_log_threshold {
+					info!("loaded +{} keys for pref {}, {} keys in total", len - previous_loaded, prefix_str, len);
+					previous_loaded = len;
+				}
 			}
 
 			if !has_more {
