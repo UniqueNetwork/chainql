@@ -5,6 +5,7 @@ use jrsonnet_evaluator::runtime_error;
 use jrsonnet_gcmodule::Trace;
 
 mod rpc;
+mod rpc_wrapper;
 mod rpc_http;
 mod rpc_ws;
 

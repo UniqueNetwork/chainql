@@ -15,6 +15,9 @@ pub enum RpcError {
 
 	#[error("jsonrpc error: {message} (code {code})")]
 	Server { code: i32, message: String },
+
+	#[error("request failed after {attemps} attemps: {error}")]
+	AttemptsFailed { attemps: usize, error: Box<RpcError> },
 }
 
 pub type Result<T, E = RpcError> = core::result::Result<T, E>;

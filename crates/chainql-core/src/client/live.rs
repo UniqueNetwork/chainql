@@ -21,6 +21,7 @@ use url::Url;
 
 use crate::client::rpc::{RpcClient, RpcError};
 use crate::client::rpc_http::HttpClient;
+use crate::client::rpc_wrapper::RetryClient;
 use crate::client::rpc_ws::WsClient;
 
 use super::ClientT;
@@ -48,7 +49,7 @@ pub type Result<T, E = Error> = result::Result<T, E>;
 #[derive(Clone, Trace)]
 pub struct ClientShared {
 	#[trace(skip)]
-	rpc_client: Rc<Box<dyn RpcClient>>,
+	rpc_client: Rc<RetryClient>,
 }
 
 impl ClientShared {
@@ -56,15 +57,16 @@ impl ClientShared {
 		let url: Url = url.as_ref().parse()?;
 		let timeout: Duration = Duration::from_secs(300);
 
-		let client: Box<dyn RpcClient> = match url.scheme() {
+		let retries_after_error = 3;
+		let client: RetryClient = match url.scheme() {
 			"http" | "https" => {
 				let client = HttpClient::new(url, timeout)?;
-				Box::new(client)
+				RetryClient::new(client, retries_after_error)
 			}
 			"ws" | "wss" => {
 				let handle = Handle::current();
 				let client = handle.block_on(WsClient::new(url, timeout))?;
-				Box::new(client)
+				RetryClient::new(client, retries_after_error)
 			}
 			scheme => {
 				return Err(Error::UnsupportedUrlScheme(scheme.to_owned()));
@@ -134,7 +136,7 @@ peg::parser!(
 #[derive(Clone, Trace)]
 pub struct LiveClient {
 	#[trace(skip)]
-	real: Rc<Box<dyn RpcClient>>,
+	real: Rc<RetryClient>,
 	#[trace(skip)]
 	#[allow(clippy::type_complexity)]
 	key_value_cache: Rc<RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
