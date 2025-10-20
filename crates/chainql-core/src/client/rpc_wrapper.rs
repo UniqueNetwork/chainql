@@ -28,7 +28,12 @@ macro_rules! retry {
 			let mut last_error = None;
 			for _ in 0..$max_attemps {
 				match $method {
-					Ok(result) => return Ok(result),
+					Ok(result) => {
+						return Ok(result);
+					},
+					Err(err @ RpcError::Server { .. }) => {
+						return Err(err);
+					},
 					Err(err) => {
 						warn!("failed to execute {}: {}", stringify!($method), err);
 						last_error = Some(err);
