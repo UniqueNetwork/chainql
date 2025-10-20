@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tracing::warn;
 
 use crate::client::rpc::{QueryStorageResult, Result, RpcClient, RpcError};
 
@@ -28,7 +29,10 @@ macro_rules! retry {
 			for _ in 0..$max_attemps {
 				match $method {
 					Ok(result) => return Ok(result),
-					Err(err) => last_error = Some(err),
+					Err(err) => {
+						warn!("failed to execute {}: {}", stringify!($method), err);
+						last_error = Some(err);
+					},
 				}
 			}
 			return Err(RpcError::AttemptsFailed {
